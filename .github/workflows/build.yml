@@ -1,0 +1,216 @@
+name: Build codedump plugin
+
+on:
+  push:
+    branches: [master, main]
+    tags: ['v*']
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BUILD_TYPE: Release
+
+# codedump's CMake fetches idax via FetchContent, and idax bootstraps the IDA
+# SDK (and ida-cmake) itself when IDASDK is unset — so CI just needs a C++23
+# toolchain. No SDK checkout, no IDASDK wiring.
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macos-x86_64
+            cmake_arch: x86_64
+          - os: macos-latest
+            name: macos-arm64
+            cmake_arch: arm64
+          - os: ubuntu-latest
+            name: linux-x86_64
+          - os: windows-latest
+            name: windows-x86_64
+            msvc_arch: x64
+
+    runs-on: ${{ matrix.os }}
+    name: Build ${{ matrix.name }}
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
+
+      - name: Install build deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # GCC 13 ships C++23 std::format / std::expected.
+          sudo apt-get install -y build-essential cmake ninja-build ccache g++-13
+          echo "CC=gcc-13"  >> "$GITHUB_ENV"
+          echo "CXX=g++-13" >> "$GITHUB_ENV"
+
+      - name: Install build deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja ccache || true
+
+      - name: Install build deps (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install ninja ccache -y --no-progress
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ matrix.name }}-${{ hashFiles('CMakeLists.txt', 'src/**') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ matrix.name }}-
+
+      - name: Set ccache env (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          echo "CCACHE_DIR=$HOME/.ccache"               >> "$GITHUB_ENV"
+          echo "CCACHE_BASEDIR=${{ github.workspace }}" >> "$GITHUB_ENV"
+          echo "CCACHE_COMPRESS=true"                   >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=1G"                      >> "$GITHUB_ENV"
+
+      - name: Set ccache env (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "CCACHE_DIR=$env:USERPROFILE\.ccache"    >> $env:GITHUB_ENV
+          "CCACHE_BASEDIR=${{ github.workspace }}" >> $env:GITHUB_ENV
+          "CCACHE_COMPRESS=true"                   >> $env:GITHUB_ENV
+          "CCACHE_MAXSIZE=1G"                      >> $env:GITHUB_ENV
+
+      - name: Configure (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            ${{ runner.os == 'macOS' && format('-DCMAKE_OSX_ARCHITECTURES={0}', matrix.cmake_arch) || '' }}
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} `
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} -j2
+
+      - name: Show ccache stats
+        if: always()
+        shell: bash
+        run: ccache --show-stats || true
+
+      - name: Find built plugin (Unix)
+        if: runner.os != 'Windows'
+        id: find_plugin_unix
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then EXT="dylib"; else EXT="so"; fi
+          PLUGIN_FILE=$(find build -name "codedump.${EXT}" -type f 2>/dev/null | head -1)
+          if [ -z "$PLUGIN_FILE" ]; then
+            echo "ERROR: could not find built plugin (codedump.${EXT})"
+            find build -name 'codedump*' -type f 2>/dev/null || true
+            exit 1
+          fi
+          echo "plugin_file=$PLUGIN_FILE" >> "$GITHUB_OUTPUT"
+          echo "extension=$EXT"           >> "$GITHUB_OUTPUT"
+          echo "Found plugin: $PLUGIN_FILE"
+
+      - name: Find built plugin (Windows)
+        if: runner.os == 'Windows'
+        id: find_plugin_windows
+        shell: pwsh
+        run: |
+          $plugin = Get-ChildItem -Path build -Recurse -Filter 'codedump.dll' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($null -eq $plugin) {
+            Write-Error 'Could not find built plugin (codedump.dll)'
+            Get-ChildItem -Path build -Recurse -Filter 'codedump*' -ErrorAction SilentlyContinue
+            exit 1
+          }
+          "plugin_file=$($plugin.FullName)" >> $env:GITHUB_OUTPUT
+          'extension=dll' >> $env:GITHUB_OUTPUT
+          Write-Host "Found plugin: $($plugin.FullName)"
+
+      - name: Prepare artifact (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          cp "${{ steps.find_plugin_unix.outputs.plugin_file }}" \
+             "artifacts/codedump_${{ matrix.name }}.${{ steps.find_plugin_unix.outputs.extension }}"
+
+      - name: Prepare artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Copy-Item "${{ steps.find_plugin_windows.outputs.plugin_file }}" `
+                    "artifacts/codedump_${{ matrix.name }}.${{ steps.find_plugin_windows.outputs.extension }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codedump-${{ matrix.name }}
+          path: artifacts/
+          retention-days: 30
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ matrix.name }}
+          path: |
+            build/CMakeCache.txt
+            build/CMakeFiles/CMakeOutput.log
+            build/CMakeFiles/CMakeError.log
+          if-no-files-found: ignore
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name "*.dylib" -o -name "*.so" -o -name "*.dll" \) -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

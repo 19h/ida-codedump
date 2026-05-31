@@ -1,0 +1,47 @@
+*.i64
+*.id0
+*.id1
+*.nam
+*.til
+
+.claude/
+# Compiled files
+*.a
+*.dll
+*.dylib
+*.exe
+*.la
+*.lib
+*.lo
+*.o
+*.obj
+*.out
+*.so
+*.so.*
+
+# Cache
+*.pyc
+__pycache__/
+
+# Build directories
+src/bin
+obj/
+build/
+build*/
+
+# Workspace
+_wks/
+
+# OS Files
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+*.pdb
+node_modules/
+target/
+
+.cache/
