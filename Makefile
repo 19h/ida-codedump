@@ -1,4 +1,4 @@
-.PHONY: all clean install configure
+.PHONY: all clean install configure cdump
 
 BUILD_DIR := build
 CMAKE     ?= cmake
@@ -12,6 +12,14 @@ configure: $(BUILD_DIR)/CMakeCache.txt
 $(BUILD_DIR)/CMakeCache.txt:
 	@mkdir -p $(BUILD_DIR)
 	@$(CMAKE) -S . -B $(BUILD_DIR) -G "$(GENERATOR)" -DCMAKE_BUILD_TYPE=Release
+
+# cdump is part of the default build. This target also force-enables it for an
+# existing build dir whose cache was configured with CODEDUMP_BUILD_CLI=OFF.
+cdump:
+	@mkdir -p $(BUILD_DIR)
+	@$(CMAKE) -S . -B $(BUILD_DIR) -G "$(GENERATOR)" -DCMAKE_BUILD_TYPE=Release \
+		-DCODEDUMP_BUILD_CLI=ON
+	@$(CMAKE) --build $(BUILD_DIR) --target cdump -j$(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
 clean:
 	@rm -rf $(BUILD_DIR)

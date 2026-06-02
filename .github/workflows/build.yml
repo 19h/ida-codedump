@@ -1,4 +1,4 @@
-name: Build codedump plugin
+name: Build codedump
 
 on:
   push:
@@ -99,6 +99,7 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DCODEDUMP_BUILD_CLI=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             ${{ runner.os == 'macOS' && format('-DCMAKE_OSX_ARCHITECTURES={0}', matrix.cmake_arch) || '' }}
@@ -109,6 +110,7 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} `
+            -DCODEDUMP_BUILD_CLI=ON `
             -DCMAKE_C_COMPILER_LAUNCHER=ccache `
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
@@ -121,7 +123,7 @@ jobs:
         shell: bash
         run: ccache --show-stats || true
 
-      - name: Find built plugin (Unix)
+      - name: Find built outputs (Unix)
         if: runner.os != 'Windows'
         id: find_plugin_unix
         shell: bash
@@ -133,11 +135,19 @@ jobs:
             find build -name 'codedump*' -type f 2>/dev/null || true
             exit 1
           fi
+          CLI_FILE=$(find build -name "cdump" -type f 2>/dev/null | head -1)
+          if [ -z "$CLI_FILE" ]; then
+            echo "ERROR: could not find built CLI (cdump)"
+            find build -name 'cdump*' -type f 2>/dev/null || true
+            exit 1
+          fi
           echo "plugin_file=$PLUGIN_FILE" >> "$GITHUB_OUTPUT"
           echo "extension=$EXT"           >> "$GITHUB_OUTPUT"
+          echo "cli_file=$CLI_FILE"       >> "$GITHUB_OUTPUT"
           echo "Found plugin: $PLUGIN_FILE"
+          echo "Found CLI: $CLI_FILE"
 
-      - name: Find built plugin (Windows)
+      - name: Find built outputs (Windows)
         if: runner.os == 'Windows'
         id: find_plugin_windows
         shell: pwsh
@@ -148,9 +158,17 @@ jobs:
             Get-ChildItem -Path build -Recurse -Filter 'codedump*' -ErrorAction SilentlyContinue
             exit 1
           }
+          $cli = Get-ChildItem -Path build -Recurse -Filter 'cdump.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($null -eq $cli) {
+            Write-Error 'Could not find built CLI (cdump.exe)'
+            Get-ChildItem -Path build -Recurse -Filter 'cdump*' -ErrorAction SilentlyContinue
+            exit 1
+          }
           "plugin_file=$($plugin.FullName)" >> $env:GITHUB_OUTPUT
+          "cli_file=$($cli.FullName)" >> $env:GITHUB_OUTPUT
           'extension=dll' >> $env:GITHUB_OUTPUT
           Write-Host "Found plugin: $($plugin.FullName)"
+          Write-Host "Found CLI: $($cli.FullName)"
 
       - name: Prepare artifact (Unix)
         if: runner.os != 'Windows'
@@ -159,6 +177,9 @@ jobs:
           mkdir -p artifacts
           cp "${{ steps.find_plugin_unix.outputs.plugin_file }}" \
              "artifacts/codedump_${{ matrix.name }}.${{ steps.find_plugin_unix.outputs.extension }}"
+          cp "${{ steps.find_plugin_unix.outputs.cli_file }}" \
+             "artifacts/cdump_${{ matrix.name }}"
+          chmod +x "artifacts/cdump_${{ matrix.name }}"
 
       - name: Prepare artifact (Windows)
         if: runner.os == 'Windows'
@@ -167,6 +188,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           Copy-Item "${{ steps.find_plugin_windows.outputs.plugin_file }}" `
                     "artifacts/codedump_${{ matrix.name }}.${{ steps.find_plugin_windows.outputs.extension }}"
+          Copy-Item "${{ steps.find_plugin_windows.outputs.cli_file }}" `
+                    "artifacts/cdump_${{ matrix.name }}.exe"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -202,7 +225,7 @@ jobs:
       - name: Prepare release files
         run: |
           mkdir -p release
-          find artifacts -type f \( -name "*.dylib" -o -name "*.so" -o -name "*.dll" \) -exec cp {} release/ \;
+          find artifacts -type f -exec cp {} release/ \;
           ls -la release/
 
       - name: Create GitHub release

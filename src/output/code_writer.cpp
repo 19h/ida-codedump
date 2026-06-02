@@ -44,7 +44,9 @@ std::string CodeWriter::build_header(
     }
 
     // Start function(s)
-    if (start_functions.size() == 1) {
+    if (start_functions.empty()) {
+        ss << "// Start: all functions (no seed resolution)\n";
+    } else if (start_functions.size() == 1) {
         ida::Address start_ea = *start_functions.begin();
         auto it = summaries.find(start_ea);
         std::string name = it != summaries.end() ? it->second.func_name : "unknown";

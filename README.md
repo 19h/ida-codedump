@@ -169,10 +169,80 @@ The plugin is intentionally **hidden**: it has no menu entry and no default hotk
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
-# then copy build/codedump.{so,dylib,dll} into your plugins dir
+# then copy build/codedump.{so,dylib,dll} into your plugins dir;
+# build/cdump or build/cdump.exe is the headless CLI
 ```
 
-CI builds the plugin on macOS (x86_64 + arm64), Linux x86_64, and Windows x86_64 on every push; tagged `v*` pushes attach the binaries to a GitHub release.
+CI builds the plugin and `cdump` on macOS (x86_64 + arm64), Linux x86_64, and Windows x86_64 on every push; tagged `v*` pushes attach both binaries to a GitHub release.
+
+### Headless CLI (`cdump`)
+
+For bulk dumps or CI jobs, `cdump` is the headless idalib command-line tool. It opens an IDB or binary and renders the same code, assembly, DOT, and PTN outputs as the plugin.
+
+It is part of the default build:
+
+```bash
+make        # builds the plugin and cdump
+make cdump  # explicitly build just the CLI target
+```
+
+The equivalent CMake build is:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target cdump
+```
+
+By default the executable links through the SDK's `idasdk::idalib` import target, so CI can build release artifacts without a full IDA install. At runtime, `cdump` still needs the real IDA libraries from your local IDA installation (`libidalib` and `libida`). Put the executable in the IDA library directory, or add that directory to your platform's loader path (`LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, or `PATH`).
+
+For local development, you can instead link the executable directly against an installed IDA runtime:
+
+```bash
+IDADIR=/path/to/ida/bin cmake -S . -B build -DCODEDUMP_CLI_USE_IDADIR_RUNTIME=ON
+cmake --build build --target cdump
+```
+
+Tagged releases upload the CLI as `cdump_linux-x86_64`, `cdump_macos-x86_64`, `cdump_macos-arm64`, or `cdump_windows-x86_64.exe`.
+
+Usage:
+
+```
+cdump [options] <input.idb|binary>
+
+  -f, --functions <spec>    Start functions by name or 0xADDR. Separate with comma or |
+                            or repeat -f. Omit for all functions.
+  -o, --out <file>          Output path. Use "-" for stdout. By default cdump writes
+                            <input-stem>.<ext> next to the command-line input.
+  --format code|asm|dot|ptn Output kind. Default: code.
+  --caller-depth N          Walk callers from the resolved start functions. Default: 0.
+  --callee-depth N          Walk callees/refs from the resolved start functions. Default: 0.
+  --ptn, --no-ptn           Enable or omit inline PTN in code/asm output. Default: off.
+  --regs, --register-in-out Add incoming/outgoing register summaries.
+  --offsets, --size-comments
+                            Annotate types with member offsets, sizes, and sizeof.
+  --trim, --referenced-only Trim structs/unions to referenced fields.
+  --no-direct-calls ...     Disable graph-walk xref kinds; one flag per xref kind.
+  --max-chars N             For code output, drop smallest non-seed function blocks
+                            until the rendered text fits. 0 means unlimited.
+  -q, --quiet               Suppress progress output.
+  -v, --verbose             Show extra progress detail.
+```
+
+Examples:
+
+```bash
+cdump mybin.i64                          # every function; writes ./mybin.c by default
+cdump -f 0x140001000,main -o out.c mybin
+cdump -f parse --callee-depth 3 --ptn --regs --offsets --trim-types mybin
+cdump -f main --callee-depth 2 --format dot -o graph.dot mybin.i64
+```
+
+Key properties:
+- All-functions mode iterates `ida::function::by_index` directly and skips caller/callee graph discovery. Depths and xref filters apply only when at least one `-f` seed resolves.
+- If every supplied `-f` spec fails to resolve, the current CLI falls back to all-functions mode.
+- Type declarations are collected only from decompiled functions in the dump; unused Local Types entries are not emitted.
+- Code and assembly outputs include resolved type declarations. DOT output uses discovered graph edges. Standalone PTN output is produced with `--format ptn`.
+- The CLI runs in its own idalib process and does not require launching the IDA GUI.
 
 ---
 

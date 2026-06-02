@@ -145,3 +145,88 @@ if(CODEDUMP_BUILD_BENCH)
         target_compile_options(cdump_bench PRIVATE -Wall -Wextra -Wno-unused-parameter)
     endif()
 endif()
+
+# ── cdump: headless idalib CLI for full function+type dumps (like idalib-dump) ─
+#   cmake -B build
+#   cmake --build build --target cdump
+#   IDADIR=... ./build/cdump -f 0x123,sub_foo --ptn --regs -o out.c mybin.i64
+#
+# Walks exactly the requested functions (or *all* if -f omitted) and emits the
+# same style of output as the UI (code + resolved types that are actually used).
+# PTN is off by default (use --ptn); supports all UI toggles via flags.
+option(CODEDUMP_BUILD_CLI "Build the headless idalib cdump CLI tool" ON)
+option(CODEDUMP_CLI_USE_IDADIR_RUNTIME
+    "Link cdump against runtime libraries from IDADIR instead of SDK import libraries" OFF)
+
+if(CODEDUMP_BUILD_CLI)
+    if(WIN32)
+        set(_ida_runtime_dir "$ENV{IDADIR}")
+        set(_idalib_name "idalib.lib")
+        set(_ida_name "ida.lib")
+    elseif(APPLE)
+        set(_ida_runtime_dir "$ENV{IDADIR}")
+        set(_idalib_name "libidalib.dylib")
+        set(_ida_name "libida.dylib")
+    else()
+        set(_ida_runtime_dir "$ENV{IDADIR}")
+        set(_idalib_name "libidalib.so")
+        set(_ida_name "libida.so")
+    endif()
+
+    if(CODEDUMP_CLI_USE_IDADIR_RUNTIME AND
+       (NOT _ida_runtime_dir OR NOT EXISTS "${_ida_runtime_dir}/${_idalib_name}"))
+        message(FATAL_ERROR
+            "CODEDUMP_CLI_USE_IDADIR_RUNTIME=ON but IDADIR is unset or has no "
+            "${_idalib_name}. Set IDADIR to the IDA install dir containing "
+            "${_idalib_name} and ${_ida_name}.")
+    endif()
+
+    add_executable(cdump
+        harness/cdump.cpp
+        src/graph/graph_builder.cpp
+        src/analysis/ctree_analyzer.cpp
+        src/analysis/ptn_emitter.cpp
+        src/analysis/register_analyzer.cpp
+        src/analysis/type_collector.cpp
+        src/output/code_writer.cpp
+        src/output/dot_writer.cpp
+        src/output/asm_writer.cpp
+        src/output/ptn_writer.cpp
+    )
+    target_link_libraries(cdump PRIVATE idax::idax)
+    if(CODEDUMP_CLI_USE_IDADIR_RUNTIME)
+        target_link_libraries(cdump PRIVATE
+            "${_ida_runtime_dir}/${_ida_name}"
+            "${_ida_runtime_dir}/${_idalib_name}"
+        )
+    else()
+        target_link_libraries(cdump PRIVATE idasdk::idalib)
+    endif()
+    target_include_directories(cdump PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src)
+    target_compile_features(cdump PRIVATE cxx_std_23)
+    target_compile_definitions(cdump PRIVATE
+        USE_DANGEROUS_FUNCTIONS USE_STANDARD_FILE_FUNCTIONS __IDP__)
+    set_property(TARGET cdump PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
+    if(CODEDUMP_CLI_USE_IDADIR_RUNTIME)
+        set_target_properties(cdump PROPERTIES
+            BUILD_RPATH "${_ida_runtime_dir}"
+            INSTALL_RPATH "${_ida_runtime_dir}"
+        )
+    elseif(APPLE)
+        set_target_properties(cdump PROPERTIES
+            BUILD_WITH_INSTALL_RPATH TRUE
+            INSTALL_RPATH "@loader_path"
+        )
+    elseif(NOT WIN32)
+        set_target_properties(cdump PROPERTIES
+            BUILD_WITH_INSTALL_RPATH TRUE
+            INSTALL_RPATH "$ORIGIN"
+        )
+    endif()
+    if(APPLE)
+        target_link_options(cdump PRIVATE -Wl,-flat_namespace)
+    endif()
+    if(NOT MSVC)
+        target_compile_options(cdump PRIVATE -Wall -Wextra -Wno-unused-parameter)
+    endif()
+endif()
