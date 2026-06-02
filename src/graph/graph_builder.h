@@ -3,7 +3,9 @@
 #include "common/types.h"
 #include <functional>
 #include <map>
+#include <optional>
 #include <set>
+#include <unordered_map>
 #include <vector>
 
 namespace codedump {
@@ -74,14 +76,35 @@ private:
     void add_edge(ida::Address from, ida::Address to, RefType type);
     bool should_follow(RefType type) const;
 
+    // Memoized start-of-function lookup. function_start is on the hot path
+    // (called per-instruction for every enabled ref type), and the underlying
+    // idax call fully populates a Function — including name demangling — just
+    // to read start_ea. Cache the result keyed by queried address so each
+    // address is resolved at most once across the whole crawl.
+    std::optional<ida::Address> func_start_cached(ida::Address ea);
+    // Database bitness never changes mid-crawl; resolve it once.
+    bool is_64bit();
+
     DumpOptions opts_;
     std::set<ida::Address> start_functions_;
     std::set<ida::Address> functions_;
     std::vector<Edge> edges_;
-    std::map<std::pair<ida::Address, ida::Address>, size_t> edge_map_;  // (from,to) -> index in edges_
+    // (from,to) -> index in edges_. Hashed (not ordered) — edges_ preserves
+    // insertion order; this map is only a dedup index. Hot on large graphs
+    // (e.g. virtual-call fan-out), so O(1) lookup beats std::map's O(log n).
+    struct EdgeKeyHash {
+        std::size_t operator()(const std::pair<ida::Address, ida::Address> &k) const noexcept {
+            return std::hash<ida::Address>{}(k.first) * 0x9E3779B97F4A7C15ULL
+                 ^ std::hash<ida::Address>{}(k.second);
+        }
+    };
+    std::unordered_map<std::pair<ida::Address, ida::Address>, size_t, EdgeKeyHash> edge_map_;
     std::vector<VTableEntry> vtables_;
     std::multimap<int, ida::Address> vtable_by_offset_;         // O(log n) virtual-call resolution
     bool vtables_scanned_ = false;
+
+    std::unordered_map<ida::Address, std::optional<ida::Address>> func_start_cache_;
+    std::optional<bool> is64_cache_;
 };
 
 } // namespace codedump

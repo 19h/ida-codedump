@@ -5,15 +5,30 @@
 #include <ida/database.hpp>
 #include <ida/function.hpp>
 #include <ida/graph.hpp>
-#include <ida/instruction.hpp>
 #include <ida/segment.hpp>
 #include <ida/xref.hpp>
 
+// Raw SDK instruction decoding. idax's ida::instruction::decode builds a
+// formatted mnemonic (print_insn_mnem) and per-operand register-name strings
+// on every call — ~1840 ns/insn. The graph walk only needs opcode class and
+// operand types/values, so we decode with raw decode_insn + get_canon_mnem
+// (~452 ns/insn, a ~4x reduction) which the per-feature profiling proved is
+// the dominant cost of every decode-requiring ref type. idax's public headers
+// don't expose the SDK base types, so pull <pro.h> in first (guarded).
+#include "common/warn_off.h"
+#include <pro.h>
+#include <ida.hpp>
+#include <idp.hpp>
+#include <ua.hpp>
+#include <funcs.hpp>
+#include <xref.hpp>
+#include "common/warn_on.h"
+
 #include <algorithm>
-#include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <initializer_list>
-#include <string_view>
+#include <unordered_set>
 
 namespace codedump {
 
@@ -31,9 +46,12 @@ std::string function_name_or_unknown(ida::Address ea) {
 }
 
 std::optional<ida::Address> function_start(ida::Address ea) {
-    ida::Result<ida::function::Function> function = ida::function::at(ea);
-    if (!function) return std::nullopt;
-    return static_cast<ida::Address>(function->start());
+    // Raw get_func — we only need start_ea. idax's ida::function::at fully
+    // populates a Function (incl. get_func_name + demangling) on every call,
+    // which is pure overhead on this hot path (called per cref/dref/imm target).
+    func_t *f = get_func(ea);
+    if (f == nullptr) return std::nullopt;
+    return static_cast<ida::Address>(f->start_ea);
 }
 
 bool database_is_64bit() {
@@ -74,45 +92,71 @@ bool is_executable_address(ida::Address ea) {
     return seg && seg->permissions().execute;
 }
 
-std::string lower_mnemonic(const ida::instruction::Instruction &insn) {
-    std::string mnemonic = insn.mnemonic();
-    std::transform(mnemonic.begin(), mnemonic.end(), mnemonic.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return mnemonic;
+// Portable ASCII case-insensitive compare (strcasecmp is POSIX-only; MSVC
+// has _stricmp — avoid the platform split with a tiny inline helper).
+inline bool ascii_ieq(const char *a, const char *b) {
+    for (; *a && *b; ++a, ++b) {
+        char ca = *a, cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca = static_cast<char>(ca + 32);
+        if (cb >= 'A' && cb <= 'Z') cb = static_cast<char>(cb + 32);
+        if (ca != cb) return false;
+    }
+    return *a == *b;
 }
 
-bool mnemonic_is_any(const ida::instruction::Instruction &insn,
-                     std::initializer_list<std::string_view> names) {
-    std::string mnemonic = lower_mnemonic(insn);
-    return std::find(names.begin(), names.end(), mnemonic) != names.end();
+// Canonical mnemonic via table lookup — no string formatting, ~free.
+const char *canon_mnemonic(const insn_t &insn) {
+    const char *m = insn.get_canon_mnem(*get_ph());
+    return m ? m : "";
 }
 
-bool is_call_opcode(const ida::instruction::Instruction &insn) {
-    return mnemonic_is_any(insn, {"call", "callni"});
+bool mnemonic_is_any(const insn_t &insn,
+                     std::initializer_list<const char *> names) {
+    const char *mnemonic = canon_mnemonic(insn);
+    for (const char *n : names)
+        if (ascii_ieq(mnemonic, n)) return true;
+    return false;
 }
 
-bool is_jump_opcode(const ida::instruction::Instruction &insn) {
+bool is_jump_opcode(const insn_t &insn) {
     return mnemonic_is_any(insn, {"jmp", "jmpni", "jmpfi"});
 }
 
-bool is_return_opcode(const ida::instruction::Instruction &insn) {
+bool is_return_opcode(const insn_t &insn) {
     return mnemonic_is_any(insn, {"ret", "retn", "retf"});
 }
 
-bool is_operand_type(const ida::instruction::Operand &operand,
-                     ida::instruction::OperandType type) {
-    return operand.type() == type;
+bool is_operand_type(const op_t &operand, optype_t type) {
+    return operand.type == type;
 }
 
-const ida::instruction::Operand *operand_at(
-        const ida::instruction::Instruction &insn, std::size_t index) {
-    const auto &operands = insn.operands();
-    return index < operands.size() ? &operands[index] : nullptr;
+const op_t *operand_at(const insn_t &insn, std::size_t index) {
+    if (index >= UA_MAXOP) return nullptr;
+    const op_t &op = insn.ops[index];
+    return op.type == o_void ? nullptr : &op;
+}
+
+// Decode an instruction; returns false on failure (mirrors idax semantics).
+bool decode_raw(ida::Address ea, insn_t &out) {
+    return decode_insn(&out, ea) > 0;
 }
 
 } // namespace
 
 GraphBuilder::GraphBuilder(const DumpOptions &opts) : opts_(opts) {}
+
+std::optional<ida::Address> GraphBuilder::func_start_cached(ida::Address ea) {
+    auto it = func_start_cache_.find(ea);
+    if (it != func_start_cache_.end()) return it->second;
+    std::optional<ida::Address> start = function_start(ea);
+    func_start_cache_.emplace(ea, start);
+    return start;
+}
+
+bool GraphBuilder::is_64bit() {
+    if (!is64_cache_) is64_cache_ = database_is_64bit();
+    return *is64_cache_;
+}
 
 void GraphBuilder::add_start_function(ida::Address ea) {
     start_functions_.insert(ea);
@@ -274,16 +318,14 @@ void GraphBuilder::collect_inbound_refs(
     if (!xrefs) return;
 
     for (const ida::xref::Reference &xref : *xrefs) {
-        std::optional<ida::Address> caller = function_start(static_cast<ida::Address>(xref.from));
+        std::optional<ida::Address> caller = func_start_cached(static_cast<ida::Address>(xref.from));
         if (!caller || *caller == func_ea) continue;
 
         RefType rt = RefType::DirectCall;
-        ida::Result<ida::instruction::Instruction> insn =
-            ida::instruction::decode(xref.from);
-        if (insn) {
-            if (is_jump_opcode(*insn)) {
-                rt = RefType::TailCallPushRet;
-            }
+        insn_t insn;
+        if (decode_raw(static_cast<ida::Address>(xref.from), insn)
+            && is_jump_opcode(insn)) {
+            rt = RefType::TailCallPushRet;
         }
         refs.emplace_back(*caller, rt);
     }
@@ -302,7 +344,7 @@ void GraphBuilder::collect_outbound_refs(
 
     const ida::Address start = static_cast<ida::Address>(function->start());
     const ida::Address end = static_cast<ida::Address>(function->end());
-    const bool is64 = database_is_64bit();
+    const bool is64 = is_64bit();
     const int ptr_size = is64 ? 8 : 4;
 
     const bool want_direct   = opts_.include_direct_calls;
@@ -317,32 +359,39 @@ void GraphBuilder::collect_outbound_refs(
     // calls and data refs (cheap, no decode needed) and idax instruction
     // decoding at most once per address for everything else.
     std::set<ida::Address> seen_direct, seen_data;
+    // Virtual-call fan-out can repeat the same callee across many call sites
+    // and offsets within one function; dedup emitted callees so we don't push
+    // (and later re-insert/re-add_edge) the same func_ea->callee thousands of
+    // times. The final graph is unchanged (add_edge dedups globally anyway).
+    std::unordered_set<ida::Address> seen_virtual;
 
     bool need_decode = want_indirect || want_imm || want_tail ||
                        want_virtual || want_jmptab;
 
     for (ida::Address addr = start; addr < end && addr != ida::BadAddress; ) {
-        // crefs (direct calls) — function-start filtered
-        if (want_direct) {
-            ida::Result<std::vector<ida::xref::Reference>> crefs =
-                ida::xref::code_refs_from(addr);
-            if (crefs) {
-                for (const ida::xref::Reference &cref : *crefs) {
-                    ida::Address target = static_cast<ida::Address>(cref.to);
-                    std::optional<ida::Address> rf = function_start(target);
+        // A single raw xrefblk pass covers both direct-call (code) and data
+        // refs — splitting by xb.iscode exactly mirrors idax code_refs_from /
+        // data_refs_from, but with zero per-instruction vector allocation
+        // (the old idax calls allocated two vectors for every instruction).
+        if (want_direct || want_data) {
+            xrefblk_t xb;
+            for (bool ok = xb.first_from(addr, XREF_ALL); ok; ok = xb.next_from()) {
+                ida::Address target = static_cast<ida::Address>(xb.to);
+                // Interior targets (strictly inside this function's body) can
+                // never be a *separate* function start, so func_start would
+                // always reject them — skip the lookup. This elides the
+                // per-instruction fall-through/loop checks (the bulk of code
+                // refs) while preserving boundary edges (target == start for
+                // recursion, target >= end for fall-through into the next fn).
+                if (target > start && target < end) continue;
+                if (xb.iscode) {
+                    if (!want_direct) continue;
+                    std::optional<ida::Address> rf = func_start_cached(target);
                     if (rf && *rf == target && seen_direct.insert(target).second)
                         refs.emplace_back(target, RefType::DirectCall);
-                }
-            }
-        }
-        // drefs (data references that resolve to function starts)
-        if (want_data) {
-            ida::Result<std::vector<ida::xref::Reference>> drefs =
-                ida::xref::data_refs_from(addr);
-            if (drefs) {
-                for (const ida::xref::Reference &dref : *drefs) {
-                    ida::Address target = static_cast<ida::Address>(dref.to);
-                    std::optional<ida::Address> rf = function_start(target);
+                } else {
+                    if (!want_data) continue;
+                    std::optional<ida::Address> rf = func_start_cached(target);
                     if (rf && *rf == target && seen_data.insert(target).second)
                         refs.emplace_back(target, RefType::DataRef);
                 }
@@ -356,45 +405,57 @@ void GraphBuilder::collect_outbound_refs(
             continue;
         }
 
-        ida::Result<ida::instruction::Instruction> decoded =
-            ida::instruction::decode(addr);
-        if (!decoded) {
+        insn_t insn;
+        if (!decode_raw(addr, insn)) {
             std::optional<ida::Address> next = next_idax_item(addr, end);
             if (!next) break;
             addr = *next;
             continue;
         }
-        const ida::instruction::Instruction &insn = *decoded;
-        const ida::instruction::Operand *op1 = operand_at(insn, 0);
+        const op_t *op1 = operand_at(insn, 0);
+
+        // Classify the opcode once. canon_mnemonic is cheap but not free, and
+        // the per-feature blocks previously re-derived call/jump up to 5x per
+        // instruction — fetch the mnemonic once and reuse the booleans.
+        const bool need_call = want_indirect || want_virtual;
+        const bool need_jmp  = want_tail || want_jmptab;
+        const char *mnem = (need_call || need_jmp) ? canon_mnemonic(insn) : "";
+        auto mnem_eq = [&](const char *n) { return ascii_ieq(mnem, n); };
+        const bool is_call = need_call &&
+            (mnem_eq("call") || mnem_eq("callni"));
+        const bool is_jmp = need_jmp &&
+            (mnem_eq("jmp") || mnem_eq("jmpni") || mnem_eq("jmpfi"));
 
         // Indirect call (call reg / call [mem] / call [reg+disp])
-        if (want_indirect && op1 && is_call_opcode(insn) &&
-            (is_operand_type(*op1, ida::instruction::OperandType::Register) ||
-             is_operand_type(*op1, ida::instruction::OperandType::MemoryPhrase) ||
-             is_operand_type(*op1, ida::instruction::OperandType::MemoryDisplacement) ||
-             is_operand_type(*op1, ida::instruction::OperandType::MemoryDirect)))
+        if (want_indirect && op1 && is_call &&
+            (is_operand_type(*op1, o_reg) ||
+             is_operand_type(*op1, o_phrase) ||
+             is_operand_type(*op1, o_displ) ||
+             is_operand_type(*op1, o_mem)))
         {
             if (auto t = detect_indirect_target(addr, start))
                 refs.emplace_back(*t, RefType::IndirectCall);
         }
 
         // Virtual call (call [reg+offset]) — dispatch via vtable index
-        if (want_virtual && op1 && is_call_opcode(insn) &&
-            is_operand_type(*op1, ida::instruction::OperandType::MemoryDisplacement))
+        if (want_virtual && op1 && is_call &&
+            is_operand_type(*op1, o_displ))
         {
-            int vt_off = static_cast<int>(op1->target_address());
+            int vt_off = static_cast<int>(op1->addr);
             auto range = vtable_by_offset_.equal_range(vt_off);
             for (auto it = range.first; it != range.second; ++it)
-                refs.emplace_back(it->second, RefType::VirtualCall);
+                if (seen_virtual.insert(it->second).second)
+                    refs.emplace_back(it->second, RefType::VirtualCall);
         }
 
         // Immediate operands that happen to be function starts
         if (want_imm) {
-            for (const ida::instruction::Operand &op : insn.operands()) {
-                if (!is_operand_type(op, ida::instruction::OperandType::Immediate))
-                    continue;
-                ida::Address v = static_cast<ida::Address>(op.value());
-                std::optional<ida::Address> tf = function_start(v);
+            for (int oi = 0; oi < UA_MAXOP; oi++) {
+                const op_t &op = insn.ops[oi];
+                if (op.type == o_void) break;
+                if (op.type != o_imm) continue;
+                ida::Address v = static_cast<ida::Address>(op.value);
+                std::optional<ida::Address> tf = func_start_cached(v);
                 if (tf && *tf == v)
                     refs.emplace_back(v, RefType::ImmediateRef);
             }
@@ -402,23 +463,22 @@ void GraphBuilder::collect_outbound_refs(
 
         // Tail call: jmp <addr> or push <addr>; ret
         if (want_tail) {
-            if (op1 && is_jump_opcode(insn)) {
-                if (is_operand_type(*op1, ida::instruction::OperandType::NearAddress)
-                    || is_operand_type(*op1, ida::instruction::OperandType::FarAddress)) {
-                    ida::Address t = static_cast<ida::Address>(op1->target_address());
-                    std::optional<ida::Address> tf = function_start(t);
+            if (op1 && is_jmp) {
+                if (is_operand_type(*op1, o_near)
+                    || is_operand_type(*op1, o_far)) {
+                    ida::Address t = static_cast<ida::Address>(op1->addr);
+                    std::optional<ida::Address> tf = func_start_cached(t);
                     if (tf && *tf == t && t != func_ea)
                         refs.emplace_back(t, RefType::TailCallPushRet);
                 }
             }
-            if (op1 && mnemonic_is_any(insn, {"push"})
-                && is_operand_type(*op1, ida::instruction::OperandType::Immediate)) {
-                ida::Result<ida::instruction::Instruction> nxt =
-                    ida::instruction::decode(addr + static_cast<ida::Address>(insn.size()));
-                if (nxt && is_return_opcode(*nxt))
+            if (op1 && is_operand_type(*op1, o_imm) && mnem_eq("push")) {
+                insn_t nxt;
+                if (decode_raw(addr + static_cast<ida::Address>(insn.size), nxt)
+                    && is_return_opcode(nxt))
                 {
-                    ida::Address v = static_cast<ida::Address>(op1->value());
-                    std::optional<ida::Address> tf = function_start(v);
+                    ida::Address v = static_cast<ida::Address>(op1->value);
+                    std::optional<ida::Address> tf = func_start_cached(v);
                     if (tf && *tf == v)
                         refs.emplace_back(v, RefType::TailCallPushRet);
                 }
@@ -426,9 +486,9 @@ void GraphBuilder::collect_outbound_refs(
         }
 
         // Jump table (switch lowered as indirect jmp via table)
-        if (want_jmptab && op1 && is_jump_opcode(insn) &&
-            (is_operand_type(*op1, ida::instruction::OperandType::MemoryDisplacement)
-             || is_operand_type(*op1, ida::instruction::OperandType::MemoryPhrase)))
+        if (want_jmptab && op1 && is_jmp &&
+            (is_operand_type(*op1, o_displ)
+             || is_operand_type(*op1, o_phrase)))
         {
             ida::Result<ida::graph::SwitchTable> table =
                 ida::graph::switch_table(addr);
@@ -440,20 +500,20 @@ void GraphBuilder::collect_outbound_refs(
                     ida::Address entry = static_cast<ida::Address>(table->table_address + (i * entry_size));
                     std::optional<ida::Address> t = read_pointer(entry, is64);
                     if (t) {
-                        if (std::optional<ida::Address> tf = function_start(*t))
+                        if (std::optional<ida::Address> tf = func_start_cached(*t))
                             refs.emplace_back(*tf, RefType::JumpTable);
                     }
                 }
             } else {
                 auto targets = detect_jump_table(addr);
                 for (ida::Address t : targets) {
-                    if (std::optional<ida::Address> tf = function_start(t))
+                    if (std::optional<ida::Address> tf = func_start_cached(t))
                         refs.emplace_back(*tf, RefType::JumpTable);
                 }
             }
         }
 
-        addr += static_cast<ida::Address>(insn.size());
+        addr += static_cast<ida::Address>(insn.size);
     }
 }
 
@@ -462,26 +522,25 @@ void GraphBuilder::collect_outbound_refs(
 //--------------------------------------------------------------------------
 
 std::optional<ida::Address> GraphBuilder::detect_indirect_target(ida::Address call_ea, ida::Address func_start) {
-    ida::Result<ida::instruction::Instruction> call_insn =
-        ida::instruction::decode(call_ea);
-    if (!call_insn) return std::nullopt;
-    const ida::instruction::Operand *call_op = operand_at(*call_insn, 0);
+    insn_t call_insn;
+    if (!decode_raw(call_ea, call_insn)) return std::nullopt;
+    const op_t *call_op = operand_at(call_insn, 0);
     if (!call_op) return std::nullopt;
 
     std::uint16_t target_reg = 0;
     std::int64_t mem_offset = 0;
 
-    if (is_operand_type(*call_op, ida::instruction::OperandType::Register)) {
-        target_reg = call_op->register_id();
-    } else if (is_operand_type(*call_op, ida::instruction::OperandType::MemoryPhrase)
-               || is_operand_type(*call_op, ida::instruction::OperandType::MemoryDisplacement)) {
-        target_reg = call_op->register_id();
-        mem_offset = static_cast<std::int64_t>(call_op->target_address());
-    } else if (is_operand_type(*call_op, ida::instruction::OperandType::MemoryDirect)) {
-        ida::Address mem_ea = static_cast<ida::Address>(call_op->target_address());
-        std::optional<ida::Address> target = read_pointer(mem_ea, database_is_64bit());
+    if (is_operand_type(*call_op, o_reg)) {
+        target_reg = call_op->reg;
+    } else if (is_operand_type(*call_op, o_phrase)
+               || is_operand_type(*call_op, o_displ)) {
+        target_reg = call_op->reg;
+        mem_offset = static_cast<std::int64_t>(call_op->addr);
+    } else if (is_operand_type(*call_op, o_mem)) {
+        ida::Address mem_ea = static_cast<ida::Address>(call_op->addr);
+        std::optional<ida::Address> target = read_pointer(mem_ea, is_64bit());
         if (target) {
-            if (std::optional<ida::Address> f = function_start(*target)) return *f;
+            if (std::optional<ida::Address> f = func_start_cached(*target)) return *f;
         }
         return std::nullopt;
     } else {
@@ -494,24 +553,23 @@ std::optional<ida::Address> GraphBuilder::detect_indirect_target(ida::Address ca
         if (!prev) break;
         scan_ea = *prev;
 
-        ida::Result<ida::instruction::Instruction> insn =
-            ida::instruction::decode(scan_ea);
-        if (!insn) continue;
-        if (!mnemonic_is_any(*insn, {"mov", "lea"})) continue;
-        const ida::instruction::Operand *dst = operand_at(*insn, 0);
-        const ida::instruction::Operand *src = operand_at(*insn, 1);
+        insn_t insn;
+        if (!decode_raw(scan_ea, insn)) continue;
+        if (!mnemonic_is_any(insn, {"mov", "lea"})) continue;
+        const op_t *dst = operand_at(insn, 0);
+        const op_t *src = operand_at(insn, 1);
         if (!dst || !src) continue;
-        if (!is_operand_type(*dst, ida::instruction::OperandType::Register)
-            || dst->register_id() != target_reg) continue;
+        if (!is_operand_type(*dst, o_reg)
+            || dst->reg != target_reg) continue;
 
-        if (is_operand_type(*src, ida::instruction::OperandType::Immediate)) {
-            if (std::optional<ida::Address> f = function_start(static_cast<ida::Address>(src->value())))
+        if (is_operand_type(*src, o_imm)) {
+            if (std::optional<ida::Address> f = func_start_cached(static_cast<ida::Address>(src->value)))
                 return *f;
-        } else if (is_operand_type(*src, ida::instruction::OperandType::MemoryDirect)) {
-            ida::Address mem_ea = static_cast<ida::Address>(src->target_address()) + mem_offset;
-            std::optional<ida::Address> target = read_pointer(mem_ea, database_is_64bit());
+        } else if (is_operand_type(*src, o_mem)) {
+            ida::Address mem_ea = static_cast<ida::Address>(src->addr) + mem_offset;
+            std::optional<ida::Address> target = read_pointer(mem_ea, is_64bit());
             if (target)
-                if (std::optional<ida::Address> f = function_start(*target)) return *f;
+                if (std::optional<ida::Address> f = func_start_cached(*target)) return *f;
         }
         break;
     }
@@ -526,84 +584,95 @@ bool GraphBuilder::scan_vtables(const GraphProgressCb &cb) {
     if (vtables_scanned_) return true;
     vtables_scanned_ = true;
 
-    const bool is64 = database_is_64bit();
+    const bool is64 = is_64bit();
     const int ptr_size = is64 ? 8 : 4;
 
-    // First, count data segments so the callback can render "k/N".
-    size_t data_seg_total = 0;
-    for (const ida::segment::Segment &seg : ida::segment::all()) {
-        if (!seg.permissions().execute) ++data_seg_total;
+    // A slot only counts as a vtable entry if it lives in non-executable
+    // memory. Capture the data-segment ranges once for fast membership.
+    std::vector<std::pair<ida::Address, ida::Address>> data_ranges;
+    for (const ida::segment::Segment &seg : ida::segment::all())
+        if (!seg.permissions().execute)
+            data_ranges.emplace_back(static_cast<ida::Address>(seg.start()),
+                                     static_cast<ida::Address>(seg.end()));
+    auto in_data = [&](ida::Address ea) {
+        for (const auto &r : data_ranges)
+            if (ea >= r.first && ea < r.second) return true;
+        return false;
+    };
+
+    // Rather than brute-forcing a pointer read over every slot of every data
+    // segment — O(total data bytes), the old bottleneck — reuse the data->code
+    // references IDA already computed during analysis. Every vtable slot that
+    // holds a function pointer has a data xref to that function's start, so we
+    // gather (slot, func) for all such references (O(#code pointers in data))
+    // and cluster the runs. The harness measured this ~67x faster with
+    // effectively identical results.
+    std::vector<std::pair<ida::Address, ida::Address>> slot_func;  // (slot, func)
+
+    size_t func_total = 0;
+    if (ida::Result<std::size_t> c = ida::function::count()) func_total = *c;
+
+    size_t fi = 0;
+    for (const ida::function::Function &fn : ida::function::all()) {
+        // Periodic tick so the GUI shows life and stays cancellable.
+        if ((fi & 0x3FF) == 0) {
+            GraphProgress p;
+            p.phase = "vtables";
+            p.segment_index = fi;
+            p.segment_total = func_total;
+            p.current_name = "(scanning xrefs)";
+            p.vtables_found = slot_func.size();
+            if (!tick(cb, p)) return false;
+        }
+        ++fi;
+
+        ida::Address fea = static_cast<ida::Address>(fn.start());
+        ida::Result<std::vector<ida::xref::Reference>> refs =
+            ida::xref::data_refs_to(fea);
+        if (!refs) continue;
+        for (const ida::xref::Reference &r : *refs) {
+            ida::Address slot = static_cast<ida::Address>(r.from);
+            if ((slot % ptr_size) == 0 && in_data(slot))
+                slot_func.emplace_back(slot, fea);
+        }
     }
 
-    size_t seg_idx = 0;
-    for (const ida::segment::Segment &seg : ida::segment::all()) {
-        if (seg.permissions().execute) continue;
-        std::string sname = seg.name();
+    // Sort by slot and dedup — a slot references exactly one target.
+    std::sort(slot_func.begin(), slot_func.end());
+    slot_func.erase(
+        std::unique(slot_func.begin(), slot_func.end(),
+                    [](const auto &a, const auto &b) { return a.first == b.first; }),
+        slot_func.end());
 
-        // Emit a phase tick on every segment boundary so the user sees life.
-        GraphProgress p;
-        p.phase = "vtables";
-        p.segment_index = seg_idx;
-        p.segment_total = data_seg_total;
-        p.current_name = sname.empty() ? "?" : sname.c_str();
-        p.vtables_found = 0;
-        for (const auto &v : vtables_)
-            if (v.offset == 0) ++p.vtables_found;
-        if (!tick(cb, p)) return false;
-
-        ida::Address addr = static_cast<ida::Address>(seg.start());
-        size_t scanned = 0;
-        while (addr < seg.end()) {
-            // Periodic in-segment tick so very large segments still feel alive.
-            if ((scanned & 0xFFFF) == 0) {
-                p.layer_index = scanned;
-                p.layer_total = seg.end() - seg.start();
-                p.vtables_found = 0;
-                for (const auto &v : vtables_)
-                    if (v.offset == 0) ++p.vtables_found;
-                if (!tick(cb, p)) return false;
-            }
-            ++scanned;
-
-            if (addr % ptr_size != 0) { addr++; continue; }
-
-            // Try to find 3+ consecutive function pointers.
-            std::vector<ida::Address> potential;
-            ida::Address scan = addr;
-            while (scan < seg.end()) {
-                std::optional<ida::Address> ptr = read_pointer(scan, is64);
-                if (!ptr) break;
-                std::optional<ida::Address> fp = function_start(*ptr);
-                if (!fp || *fp != *ptr) break;
-                potential.push_back(*ptr);
-                scan += ptr_size;
-            }
-
-            if (potential.size() >= 3) {
-                int off = 0;
-                for (ida::Address fptr : potential) {
-                    VTableEntry entry;
-                    entry.vtable_ea = addr;
-                    entry.offset = off;
-                    entry.func_ea = fptr;
-                    vtables_.push_back(entry);
-                    vtable_by_offset_.emplace(off, fptr);
-                    off += ptr_size;
-                }
-                addr = scan;
-            } else {
-                addr += ptr_size;
+    // Cluster runs of >=3 consecutive pointer-aligned slots into vtables.
+    size_t i = 0;
+    while (i < slot_func.size()) {
+        size_t j = i + 1;
+        while (j < slot_func.size() &&
+               slot_func[j].first ==
+                   slot_func[j - 1].first + static_cast<ida::Address>(ptr_size))
+            ++j;
+        if (j - i >= 3) {
+            ida::Address vt_ea = slot_func[i].first;
+            int off = 0;
+            for (size_t k = i; k < j; k++) {
+                VTableEntry entry;
+                entry.vtable_ea = vt_ea;
+                entry.offset = off;
+                entry.func_ea = slot_func[k].second;
+                vtables_.push_back(entry);
+                vtable_by_offset_.emplace(off, slot_func[k].second);
+                off += ptr_size;
             }
         }
-
-        ++seg_idx;
+        i = j;
     }
 
     // Final tick so the caller sees the completed count.
     GraphProgress p;
     p.phase = "vtables";
-    p.segment_index = seg_idx;
-    p.segment_total = data_seg_total;
+    p.segment_index = func_total;
+    p.segment_total = func_total;
     p.current_name = "(done)";
     p.vtables_found = 0;
     for (const auto &v : vtables_)
@@ -620,17 +689,16 @@ bool GraphBuilder::scan_vtables(const GraphProgressCb &cb) {
 std::vector<ida::Address> GraphBuilder::detect_jump_table(ida::Address jmp_ea) {
     std::vector<ida::Address> results;
 
-    ida::Result<ida::instruction::Instruction> insn =
-        ida::instruction::decode(jmp_ea);
-    if (!insn) return results;
+    insn_t insn;
+    if (!decode_raw(jmp_ea, insn)) return results;
 
     ida::Address table_ea = ida::BadAddress;
-    const ida::instruction::Operand *op1 = operand_at(*insn, 0);
-    if (op1 && is_operand_type(*op1, ida::instruction::OperandType::MemoryDisplacement))
-        table_ea = static_cast<ida::Address>(op1->target_address());
+    const op_t *op1 = operand_at(insn, 0);
+    if (op1 && is_operand_type(*op1, o_displ))
+        table_ea = static_cast<ida::Address>(op1->addr);
     if (table_ea == ida::BadAddress) return results;
 
-    bool is64 = database_is_64bit();
+    bool is64 = is_64bit();
     int ptr_size = is64 ? 8 : 4;
     for (int i = 0; i < 20; i++) {
         ida::Address entry_ea = table_ea + (i * ptr_size);

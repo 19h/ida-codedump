@@ -91,3 +91,57 @@ if(MSVC)
 else()
     target_compile_options(codedump PRIVATE -Wall -Wextra -Wno-unused-parameter)
 endif()
+
+# ── cdump_bench: headless idalib profiling harness (opt-in) ──────────────
+# Reuses the already-fetched idax::idax and links against the *real* IDA
+# runtime libs (libidalib.so + libida.so) from $IDADIR to avoid the SDK-stub
+# two-level-namespace crash documented in idax's findings.
+#
+#   cmake -B build -DCODEDUMP_BUILD_BENCH=ON
+#   cmake --build build --target cdump_bench
+#   IDADIR=/path/to/ida ./build/cdump_bench <idb> --name sub_18000DE0
+option(CODEDUMP_BUILD_BENCH "Build the headless idalib benchmark harness" OFF)
+
+if(CODEDUMP_BUILD_BENCH)
+    if(WIN32)
+        set(_ida_runtime_dir "$ENV{IDADIR}")
+        set(_idalib_name "idalib.lib")
+        set(_ida_name "ida.lib")
+    elseif(APPLE)
+        set(_ida_runtime_dir "$ENV{IDADIR}")
+        set(_idalib_name "libidalib.dylib")
+        set(_ida_name "libida.dylib")
+    else()
+        set(_ida_runtime_dir "$ENV{IDADIR}")
+        set(_idalib_name "libidalib.so")
+        set(_ida_name "libida.so")
+    endif()
+
+    if(NOT _ida_runtime_dir OR NOT EXISTS "${_ida_runtime_dir}/${_idalib_name}")
+        message(FATAL_ERROR
+            "CODEDUMP_BUILD_BENCH=ON but IDADIR is unset or has no ${_idalib_name}. "
+            "Set IDADIR to the IDA install dir (the one containing ${_ida_name}).")
+    endif()
+
+    add_executable(cdump_bench
+        harness/cdump_bench.cpp
+        src/graph/graph_builder.cpp
+    )
+    target_link_libraries(cdump_bench PRIVATE
+        idax::idax
+        "${_ida_runtime_dir}/${_idalib_name}"
+        "${_ida_runtime_dir}/${_ida_name}"
+    )
+    target_include_directories(cdump_bench PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src)
+    target_compile_features(cdump_bench PRIVATE cxx_std_23)
+    target_compile_definitions(cdump_bench PRIVATE
+        USE_DANGEROUS_FUNCTIONS USE_STANDARD_FILE_FUNCTIONS __IDP__)
+    set_property(TARGET cdump_bench PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
+    set_target_properties(cdump_bench PROPERTIES
+        BUILD_RPATH "${_ida_runtime_dir}"
+        INSTALL_RPATH "${_ida_runtime_dir}"
+    )
+    if(NOT MSVC)
+        target_compile_options(cdump_bench PRIVATE -Wall -Wextra -Wno-unused-parameter)
+    endif()
+endif()
