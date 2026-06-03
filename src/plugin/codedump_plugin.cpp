@@ -344,7 +344,7 @@ static void dump_functions_impl(std::span<const ida::Address> start_funcs,
             "Step 3/3: rendering DOT (%zu nodes, %zu edges)",
             functions.size(), edges.size());
         DotWriter dw;
-        rendered = dw.render(functions, edges, start_set);
+        rendered = dw.render(functions, edges, start_set, opts);
         kind = "DOT";
         kind_count = functions.size();
     }

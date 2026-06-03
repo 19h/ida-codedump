@@ -24,6 +24,7 @@
 #include <ida/analysis.hpp>
 
 #include "common/types.h"
+#include "common/function_filter.h"
 #include "graph/graph_builder.h"
 #include "analysis/ctree_analyzer.h"
 #include "analysis/ptn_emitter.h"
@@ -81,6 +82,12 @@ struct Cli {
     bool include_tail_calls = true;
     bool include_virtual_calls = true;
     bool include_jump_tables = true;
+
+    // DOT/graph shaping
+    std::string dot_rankdir = "TB";
+    bool dot_ortho = false;
+    bool dot_omit_edge_labels = false;
+    bool tree_shake_stdlib_functions = false;
 };
 
 static void print_usage(const char* prog) {
@@ -120,6 +127,12 @@ Options:
   --no-direct-calls, --no-indirect-calls, --no-data-refs,
   --no-immediate-refs, --no-tail-calls, --no-virtual-calls, --no-jump-tables
                            Disable specific xref kinds during graph walk (when depths>0).
+  --rankdir <TB|LR|RL|BT>  DOT graph direction (default: TB).
+  --ortho, --no-ortho      Use Graphviz orthogonal edge routing for DOT.
+  --no-edge-labels, --omit-edge-labels
+                           Omit DOT edge labels while keeping edge colors/styles.
+  --tree-shake-stdlib      Drop IDA library/thunk and common runtime functions
+                           (malloc/memcpy/printf/std::... etc.) from graph walks.
 
   -q, --quiet              Suppress progress output.
   -v, --verbose            Extra progress detail.
@@ -162,6 +175,17 @@ static bool parse_int(const char* s, int& out) {
     if (end == s || *end != '\0' || v < 0) return false;
     out = static_cast<int>(v);
     return true;
+}
+
+static std::string upper_ascii(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    return text;
+}
+
+static bool is_valid_rankdir(std::string_view value) {
+    return value == "TB" || value == "LR" || value == "RL" || value == "BT";
 }
 
 static bool parse_cli(int argc, char** argv, Cli& cli) {
@@ -242,6 +266,26 @@ static bool parse_cli(int argc, char** argv, Cli& cli) {
             cli.include_jump_tables = false;
         } else if (a == "--jump-tables") {
             cli.include_jump_tables = true;
+        } else if (a == "--rankdir" || a == "--dot-rankdir") {
+            const char* v = next();
+            if (!v) { std::cerr << "Error: " << a << " requires TB|LR|RL|BT\n"; return false; }
+            cli.dot_rankdir = upper_ascii(v);
+            if (!is_valid_rankdir(cli.dot_rankdir)) {
+                std::cerr << "Error: " << a << " must be TB|LR|RL|BT\n";
+                return false;
+            }
+        } else if (a == "--ortho") {
+            cli.dot_ortho = true;
+        } else if (a == "--no-ortho") {
+            cli.dot_ortho = false;
+        } else if (a == "--no-edge-labels" || a == "--omit-edge-labels") {
+            cli.dot_omit_edge_labels = true;
+        } else if (a == "--edge-labels") {
+            cli.dot_omit_edge_labels = false;
+        } else if (a == "--tree-shake-stdlib" || a == "--shake-stdlib") {
+            cli.tree_shake_stdlib_functions = true;
+        } else if (a == "--no-tree-shake-stdlib" || a == "--no-shake-stdlib") {
+            cli.tree_shake_stdlib_functions = false;
         } else if (a == "-q" || a == "--quiet") {
             cli.quiet = true;
         } else if (a == "-v" || a == "--verbose") {
@@ -372,6 +416,10 @@ int main(int argc, char** argv) {
     opts.include_tail_calls = cli.include_tail_calls;
     opts.include_virtual_calls = cli.include_virtual_calls;
     opts.include_jump_tables = cli.include_jump_tables;
+    opts.dot_rankdir = cli.dot_rankdir;
+    opts.dot_ortho = cli.dot_ortho;
+    opts.dot_omit_edge_labels = cli.dot_omit_edge_labels;
+    opts.tree_shake_stdlib_functions = cli.tree_shake_stdlib_functions;
     opts.output_code = (cli.format == "code");
     opts.output_asm = (cli.format == "asm");
     opts.output_dot = (cli.format == "dot");
@@ -432,12 +480,20 @@ int main(int argc, char** argv) {
         func_set = gb.get_functions();
         edges = gb.get_edges();
     } else if (!requested.empty()) {
-        for (auto ea : requested) func_set.insert(ea);
+        for (auto ea : requested) {
+            if (opts.tree_shake_stdlib_functions
+                && codedump::is_system_function(ea))
+                continue;
+            func_set.insert(ea);
+        }
     } else {
         // all functions, no resolution walk (per request)
         auto n = ida::function::count().value_or(0);
         for (size_t i = 0; i < n; ++i) {
             if (auto f = ida::function::by_index(i); f) {
+                if (opts.tree_shake_stdlib_functions
+                    && codedump::is_system_function(f->start()))
+                    continue;
                 func_set.insert(f->start());
             }
         }
@@ -530,7 +586,7 @@ int main(int argc, char** argv) {
                              h_call, h_callee, cli.max_chars, type_decls, opts.omit_ptn);
     } else if (cli.format == "dot") {
         codedump::DotWriter dw;
-        rendered = dw.render(func_set, edges, start_set);
+        rendered = dw.render(func_set, edges, start_set, opts);
     } else if (cli.format == "ptn") {
         codedump::PTNWriter pw;
         rendered = pw.render(summaries, start_set, h_callee, ptn_emitter);

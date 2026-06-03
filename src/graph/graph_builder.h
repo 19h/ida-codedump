@@ -75,6 +75,7 @@ private:
 
     void add_edge(ida::Address from, ida::Address to, RefType type);
     bool should_follow(RefType type) const;
+    bool should_keep_function(ida::Address ea);
 
     // Memoized start-of-function lookup. function_start is on the hot path
     // (called per-instruction for every enabled ref type), and the underlying
@@ -104,6 +105,7 @@ private:
     bool vtables_scanned_ = false;
 
     std::unordered_map<ida::Address, std::optional<ida::Address>> func_start_cache_;
+    std::unordered_map<ida::Address, bool> function_keep_cache_;
     std::optional<bool> is64_cache_;
 };
 

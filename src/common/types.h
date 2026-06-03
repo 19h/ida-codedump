@@ -64,6 +64,10 @@ struct DumpOptions {
     bool copy_to_clipboard = false; // Skip the file write, push the rendered output to the OS clipboard
     bool register_summary = false;  // Add per-function "// incoming: ...  outgoing: ..." comment via liveness
     bool referenced_fields_only = false; // Trim struct/union members to only those actually accessed (recursive); pad unreferenced bytes
+    std::string dot_rankdir = "TB"; // Graphviz rankdir for DOT output: TB, LR, RL, BT
+    bool dot_ortho = false; // Emit splines=ortho for DOT output
+    bool dot_omit_edge_labels = false; // Keep edge colors/styles but omit ref-type labels in DOT output
+    bool tree_shake_stdlib_functions = false; // Drop library/thunk/common runtime functions from graph walks
     int max_chars = 0;  // 0 = no limit
     std::string output_path;
 };

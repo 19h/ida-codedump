@@ -1,5 +1,7 @@
 #include "graph_builder.h"
 
+#include "common/function_filter.h"
+
 #include <ida/address.hpp>
 #include <ida/data.hpp>
 #include <ida/database.hpp>
@@ -159,6 +161,7 @@ bool GraphBuilder::is_64bit() {
 }
 
 void GraphBuilder::add_start_function(ida::Address ea) {
+    if (!should_keep_function(ea)) return;
     start_functions_.insert(ea);
     functions_.insert(ea);
 }
@@ -174,6 +177,17 @@ bool GraphBuilder::should_follow(RefType type) const {
         case RefType::JumpTable:       return opts_.include_jump_tables;
         default: return false;
     }
+}
+
+bool GraphBuilder::should_keep_function(ida::Address ea) {
+    if (!opts_.tree_shake_stdlib_functions) return true;
+
+    auto it = function_keep_cache_.find(ea);
+    if (it != function_keep_cache_.end()) return it->second;
+
+    bool keep = !is_system_function(ea);
+    function_keep_cache_.emplace(ea, keep);
+    return keep;
 }
 
 void GraphBuilder::add_edge(ida::Address from, ida::Address to, RefType type) {
@@ -227,6 +241,7 @@ bool GraphBuilder::find_callers(int depth, const GraphProgressCb &cb) {
             for (const auto &[caller_ea, rt] : refs) {
                 if (caller_ea == ida::BadAddress || caller_ea == ea) continue;
                 if (!should_follow(rt)) continue;
+                if (!should_keep_function(caller_ea)) continue;
 
                 bool fresh_to_set = functions_.insert(caller_ea).second;
                 add_edge(caller_ea, ea, rt);
@@ -289,6 +304,7 @@ bool GraphBuilder::find_callees(int depth, const GraphProgressCb &cb) {
             for (const auto &[callee_ea, rt] : refs) {
                 if (callee_ea == ida::BadAddress || callee_ea == ea) continue;
                 if (!should_follow(rt)) continue;
+                if (!should_keep_function(callee_ea)) continue;
 
                 bool fresh_to_set = functions_.insert(callee_ea).second;
                 add_edge(ea, callee_ea, rt);
@@ -627,6 +643,7 @@ bool GraphBuilder::scan_vtables(const GraphProgressCb &cb) {
         ++fi;
 
         ida::Address fea = static_cast<ida::Address>(fn.start());
+        if (!should_keep_function(fea)) continue;
         ida::Result<std::vector<ida::xref::Reference>> refs =
             ida::xref::data_refs_to(fea);
         if (!refs) continue;

@@ -222,6 +222,11 @@ cdump [options] <input.idb|binary>
                             Annotate types with member offsets, sizes, and sizeof.
   --trim, --referenced-only Trim structs/unions to referenced fields.
   --no-direct-calls ...     Disable graph-walk xref kinds; one flag per xref kind.
+  --rankdir TB|LR|RL|BT     DOT graph direction. Default: TB.
+  --ortho                   Emit splines=ortho for DOT output.
+  --no-edge-labels          Omit DOT edge labels but keep colors/styles.
+  --tree-shake-stdlib       Drop library/thunk/common runtime functions such as
+                            malloc, memcpy, printf, and std::... from graph walks.
   --max-chars N             For code output, drop smallest non-seed function blocks
                             until the rendered text fits. 0 means unlimited.
   -q, --quiet               Suppress progress output.
@@ -235,6 +240,7 @@ cdump mybin.i64                          # every function; writes ./mybin.c by d
 cdump -f 0x140001000,main -o out.c mybin
 cdump -f parse --callee-depth 3 --ptn --regs --offsets --trim-types mybin
 cdump -f main --callee-depth 2 --format dot -o graph.dot mybin.i64
+cdump -f main --callee-depth 2 --format dot --rankdir LR --ortho --no-edge-labels --tree-shake-stdlib mybin.i64
 ```
 
 Key properties:
@@ -242,6 +248,7 @@ Key properties:
 - If every supplied `-f` spec fails to resolve, the current CLI falls back to all-functions mode.
 - Type declarations are collected only from decompiled functions in the dump; unused Local Types entries are not emitted.
 - Code and assembly outputs include resolved type declarations. DOT output uses discovered graph edges. Standalone PTN output is produced with `--format ptn`.
+- DOT output defaults to `rankdir=TB` with labeled edges. The CLI can switch direction (`--rankdir LR`/`RL`/`BT`), request Graphviz orthogonal routing (`--ortho`), hide edge labels (`--no-edge-labels`), and prune common runtime/library nodes (`--tree-shake-stdlib`).
 - The CLI runs in its own idalib process and does not require launching the IDA GUI.
 
 ---
@@ -270,6 +277,8 @@ This is the headline use case: one `.c` file with the function, its neighbourhoo
 3. Save the `.dot` and render it, e.g. `dot -Tsvg out.dot -o out.svg`.
 
 > **Good to know** Your start function is filled light blue. Edge colour encodes the call kind (direct = black, indirect = blue, data = green, immediate = orange, tail = red, virtual = purple, jump table = brown); indirect and virtual calls are dashed; the label lists every reference type joining two functions.
+
+> **CLI tip** For a wider, cleaner business-logic graph, use `--format dot --rankdir LR --ortho --no-edge-labels --tree-shake-stdlib`.
 
 ### Trace where a value comes from
 

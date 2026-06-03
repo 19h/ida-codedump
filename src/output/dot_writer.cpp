@@ -1,12 +1,31 @@
 #include "dot_writer.h"
 
+#include "common/function_filter.h"
+
 #include <ida/function.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <format>
 #include <fstream>
 #include <sstream>
 
 namespace codedump {
+
+namespace {
+
+std::string normalized_rankdir(const DumpOptions &opts) {
+    std::string rankdir = opts.dot_rankdir.empty() ? "TB" : opts.dot_rankdir;
+    std::transform(rankdir.begin(), rankdir.end(), rankdir.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+
+    if (rankdir == "TB" || rankdir == "LR" || rankdir == "RL" || rankdir == "BT")
+        return rankdir;
+    return "TB";
+}
+
+} // namespace
 
 std::string DotWriter::get_edge_color(RefType type) {
     switch (type) {
@@ -21,7 +40,7 @@ std::string DotWriter::get_edge_color(RefType type) {
     }
 }
 
-std::string DotWriter::get_edge_style(const std::set<RefType> &types) {
+std::string DotWriter::get_edge_style(const std::set<RefType> &types, bool include_label) {
     if (types.empty()) return "style=solid color=gray";
 
     // Use the first type for color
@@ -44,24 +63,34 @@ std::string DotWriter::get_edge_style(const std::set<RefType> &types) {
     }
 
     std::ostringstream ss;
-    ss << "style=" << style << " color=" << color
-       << " label=\"" << label.str() << "\"";
+    ss << "style=" << style << " color=" << color;
+    if (include_label)
+        ss << " label=\"" << label.str() << "\"";
     return ss.str();
 }
 
 std::string DotWriter::render(
     const std::set<ida::Address> &functions,
     const std::vector<Edge> &edges,
-    const std::set<ida::Address> &start_functions
+    const std::set<ida::Address> &start_functions,
+    const DumpOptions &opts
 ) {
     std::ostringstream out;
+    std::set<ida::Address> rendered_functions;
+    for (ida::Address ea : functions) {
+        if (opts.tree_shake_stdlib_functions && is_system_function(ea)) continue;
+        rendered_functions.insert(ea);
+    }
+
     out << "digraph callgraph {\n";
-    out << "    rankdir=TB;\n";
+    out << "    rankdir=" << normalized_rankdir(opts) << ";\n";
+    if (opts.dot_ortho)
+        out << "    splines=ortho;\n";
     out << "    node [shape=box fontname=\"Courier\" fontsize=10];\n";
     out << "    edge [fontname=\"Courier\" fontsize=8];\n\n";
 
     // Write nodes
-    for (ida::Address ea : functions) {
+    for (ida::Address ea : rendered_functions) {
         ida::Result<std::string> name = ida::function::name_at(ea);
         std::string label = (name && !name->empty()) ? *name : "?";
 
@@ -79,10 +108,13 @@ std::string DotWriter::render(
 
     // Write edges
     for (const auto &edge : edges) {
+        if (!rendered_functions.count(edge.from) || !rendered_functions.count(edge.to))
+            continue;
+
         std::string from_id = std::format("f_{:x}", edge.from);
         std::string to_id = std::format("f_{:x}", edge.to);
 
-        std::string attrs = get_edge_style(edge.types);
+        std::string attrs = get_edge_style(edge.types, !opts.dot_omit_edge_labels);
 
         out << "    " << from_id << " -> " << to_id << " [" << attrs << "];\n";
     }
@@ -95,9 +127,10 @@ bool DotWriter::write(
     const std::string &path,
     const std::set<ida::Address> &functions,
     const std::vector<Edge> &edges,
-    const std::set<ida::Address> &start_functions
+    const std::set<ida::Address> &start_functions,
+    const DumpOptions &opts
 ) {
-    std::string text = render(functions, edges, start_functions);
+    std::string text = render(functions, edges, start_functions, opts);
     std::ofstream out(path);
     if (!out) return false;
     out << text;

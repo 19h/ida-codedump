@@ -46,6 +46,7 @@ endif()
 ida_add_plugin(codedump
     SOURCES
         src/plugin/codedump_plugin.cpp
+        src/common/function_filter.cpp
         src/graph/graph_builder.cpp
         src/analysis/ctree_analyzer.cpp
         src/analysis/ptn_emitter.cpp
@@ -125,6 +126,7 @@ if(CODEDUMP_BUILD_BENCH)
 
     add_executable(cdump_bench
         harness/cdump_bench.cpp
+        src/common/function_filter.cpp
         src/graph/graph_builder.cpp
     )
     target_link_libraries(cdump_bench PRIVATE
@@ -183,6 +185,7 @@ if(CODEDUMP_BUILD_CLI)
 
     add_executable(cdump
         harness/cdump.cpp
+        src/common/function_filter.cpp
         src/graph/graph_builder.cpp
         src/analysis/ctree_analyzer.cpp
         src/analysis/ptn_emitter.cpp
