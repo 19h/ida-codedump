@@ -1,5 +1,6 @@
 #include "dot_writer.h"
 
+#include "analysis/function_ranker.h"
 #include "common/function_filter.h"
 
 #include <ida/function.hpp>
@@ -89,8 +90,12 @@ std::string DotWriter::render(
     out << "    node [shape=box fontname=\"Courier\" fontsize=10];\n";
     out << "    edge [fontname=\"Courier\" fontsize=8];\n\n";
 
+    std::vector<ida::Address> ordered_functions =
+        order_functions(rendered_functions, edges, start_functions,
+                        opts.function_order);
+
     // Write nodes
-    for (ida::Address ea : rendered_functions) {
+    for (ida::Address ea : ordered_functions) {
         ida::Result<std::string> name = ida::function::name_at(ea);
         std::string label = (name && !name->empty()) ? *name : "?";
 

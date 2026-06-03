@@ -88,6 +88,7 @@ struct Cli {
     bool dot_ortho = false;
     bool dot_omit_edge_labels = false;
     bool tree_shake_stdlib_functions = false;
+    codedump::FunctionOrder function_order = codedump::FunctionOrder::Address;
 };
 
 static void print_usage(const char* prog) {
@@ -133,6 +134,11 @@ Options:
                            Omit DOT edge labels while keeping edge colors/styles.
   --tree-shake-stdlib      Drop IDA library/thunk and common runtime functions
                            (malloc/memcpy/printf/std::... etc.) from graph walks.
+  --function-order <address|entryness|centrality>
+                           Render functions in address order (default) or by
+                           entry-ness or centrality/importance score.
+  --sort-entryness         Shortcut for --function-order entryness.
+  --sort-centrality        Shortcut for --function-order centrality.
 
   -q, --quiet              Suppress progress output.
   -v, --verbose            Extra progress detail.
@@ -286,6 +292,31 @@ static bool parse_cli(int argc, char** argv, Cli& cli) {
             cli.tree_shake_stdlib_functions = true;
         } else if (a == "--no-tree-shake-stdlib" || a == "--no-shake-stdlib") {
             cli.tree_shake_stdlib_functions = false;
+        } else if (a == "--function-order" || a == "--sort-functions") {
+            const char* v = next();
+            if (!v) { std::cerr << "Error: " << a << " requires address|entryness|centrality\n"; return false; }
+            std::string order = v;
+            std::transform(order.begin(), order.end(), order.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            if (order == "address" || order == "addr") {
+                cli.function_order = codedump::FunctionOrder::Address;
+            } else if (order == "entryness" || order == "entry-ness" || order == "entry") {
+                cli.function_order = codedump::FunctionOrder::Entryness;
+            } else if (order == "centrality" || order == "importance" || order == "important") {
+                cli.function_order = codedump::FunctionOrder::Centrality;
+            } else {
+                std::cerr << "Error: " << a << " must be address|entryness|centrality\n";
+                return false;
+            }
+        } else if (a == "--sort-entryness" || a == "--entry-sort") {
+            cli.function_order = codedump::FunctionOrder::Entryness;
+        } else if (a == "--no-sort-entryness" || a == "--no-entry-sort") {
+            cli.function_order = codedump::FunctionOrder::Address;
+        } else if (a == "--sort-centrality" || a == "--sort-importance" || a == "--importance-sort") {
+            cli.function_order = codedump::FunctionOrder::Centrality;
+        } else if (a == "--no-sort-centrality" || a == "--no-sort-importance") {
+            cli.function_order = codedump::FunctionOrder::Address;
         } else if (a == "-q" || a == "--quiet") {
             cli.quiet = true;
         } else if (a == "-v" || a == "--verbose") {
@@ -420,6 +451,7 @@ int main(int argc, char** argv) {
     opts.dot_ortho = cli.dot_ortho;
     opts.dot_omit_edge_labels = cli.dot_omit_edge_labels;
     opts.tree_shake_stdlib_functions = cli.tree_shake_stdlib_functions;
+    opts.function_order = cli.function_order;
     opts.output_code = (cli.format == "code");
     opts.output_asm = (cli.format == "asm");
     opts.output_dot = (cli.format == "dot");
@@ -583,7 +615,8 @@ int main(int argc, char** argv) {
     if (cli.format == "code") {
         codedump::CodeWriter cw;
         rendered = cw.render(summaries, annotations, edges, start_set,
-                             h_call, h_callee, cli.max_chars, type_decls, opts.omit_ptn);
+                             h_call, h_callee, cli.max_chars, type_decls,
+                             opts.omit_ptn, opts.function_order);
     } else if (cli.format == "dot") {
         codedump::DotWriter dw;
         rendered = dw.render(func_set, edges, start_set, opts);
@@ -593,7 +626,8 @@ int main(int argc, char** argv) {
     } else if (cli.format == "asm") {
         codedump::AsmWriter aw;
         rendered = aw.render(summaries, annotations, ptn_emitter,
-                             h_callee, type_decls, opts.omit_ptn);
+                             h_callee, type_decls, opts.omit_ptn,
+                             edges, start_set, opts.function_order);
     }
 
     if (rendered.empty()) {

@@ -1,5 +1,7 @@
 #include "code_writer.h"
 
+#include "analysis/function_ranker.h"
+
 #include <ida/database.hpp>
 
 #include <format>
@@ -22,7 +24,9 @@ std::string CodeWriter::build_header(
     int caller_depth,
     int callee_depth,
     const std::map<ida::Address, FunctionSummary> &summaries,
-    bool omit_ptn
+    bool omit_ptn,
+    const std::vector<ida::Address> &ordered_functions,
+    FunctionOrder function_order
 ) {
     std::ostringstream ss;
 
@@ -63,16 +67,14 @@ std::string CodeWriter::build_header(
     ss << "// Caller Depth: " << caller_depth << "\n";
     ss << "// Callee/Ref Depth: " << callee_depth << "\n";
     ss << "// Total Functions Found: " << summaries.size() << "\n";
+    ss << "// Function Sort: " << function_order_name(function_order) << "\n";
 
     // List included functions
     ss << "// Included Functions (" << summaries.size() << "):\n";
-    std::vector<std::pair<ida::Address, std::string>> sorted_funcs;
-    for (const auto &[ea, summary] : summaries) {
-        sorted_funcs.emplace_back(ea, summary.func_name);
-    }
-    std::sort(sorted_funcs.begin(), sorted_funcs.end());
-    for (const auto &[ea, name] : sorted_funcs) {
-        ss << "//   - " << name << " (" << hex_addr(ea) << ")\n";
+    for (ida::Address ea : ordered_functions) {
+        auto it = summaries.find(ea);
+        if (it == summaries.end()) continue;
+        ss << "//   - " << it->second.func_name << " (" << hex_addr(ea) << ")\n";
     }
 
     ss << "// Removed Functions: None\n";
@@ -230,17 +232,20 @@ std::string CodeWriter::render(
     int callee_depth,
     int max_chars,
     const std::string &type_decls,
-    bool omit_ptn
+    bool omit_ptn,
+    FunctionOrder function_order
 ) {
-    // Sort functions by address
-    std::vector<ida::Address> sorted_funcs;
+    std::set<ida::Address> function_set;
     for (const auto &[ea, _] : summaries) {
-        sorted_funcs.push_back(ea);
+        function_set.insert(ea);
     }
-    std::sort(sorted_funcs.begin(), sorted_funcs.end());
+    std::vector<ida::Address> sorted_funcs =
+        order_functions(function_set, edges, start_functions, function_order);
 
     // Build content
-    std::string header = build_header(start_functions, caller_depth, callee_depth, summaries, omit_ptn);
+    std::string header = build_header(start_functions, caller_depth, callee_depth,
+                                      summaries, omit_ptn, sorted_funcs,
+                                      function_order);
     header += type_decls;
 
     std::vector<std::pair<ida::Address, std::string>> blocks;
@@ -309,11 +314,12 @@ bool CodeWriter::write(
     int callee_depth,
     int max_chars,
     const std::string &type_decls,
-    bool omit_ptn
+    bool omit_ptn,
+    FunctionOrder function_order
 ) {
     std::string text = render(summaries, annotations, edges, start_functions,
                               caller_depth, callee_depth, max_chars,
-                              type_decls, omit_ptn);
+                              type_decls, omit_ptn, function_order);
     std::ofstream out(path);
     if (!out) return false;
     out << text;

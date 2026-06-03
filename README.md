@@ -227,6 +227,11 @@ cdump [options] <input.idb|binary>
   --no-edge-labels          Omit DOT edge labels but keep colors/styles.
   --tree-shake-stdlib       Drop library/thunk/common runtime functions such as
                             malloc, memcpy, printf, and std::... from graph walks.
+  --function-order address|entryness|centrality
+                            Render functions in address order (default) or by
+                            entry-ness or centrality/importance score.
+  --sort-entryness          Shortcut for `--function-order entryness`.
+  --sort-centrality         Shortcut for `--function-order centrality`.
   --max-chars N             For code output, drop smallest non-seed function blocks
                             until the rendered text fits. 0 means unlimited.
   -q, --quiet               Suppress progress output.
@@ -241,6 +246,8 @@ cdump -f 0x140001000,main -o out.c mybin
 cdump -f parse --callee-depth 3 --ptn --regs --offsets --trim-types mybin
 cdump -f main --callee-depth 2 --format dot -o graph.dot mybin.i64
 cdump -f main --callee-depth 2 --format dot --rankdir LR --ortho --no-edge-labels --tree-shake-stdlib mybin.i64
+cdump --format code --function-order entryness mybin.i64
+cdump --format code --function-order centrality mybin.i64
 ```
 
 Key properties:
@@ -249,6 +256,7 @@ Key properties:
 - Type declarations are collected only from decompiled functions in the dump; unused Local Types entries are not emitted.
 - Code and assembly outputs include resolved type declarations. DOT output uses discovered graph edges. Standalone PTN output is produced with `--format ptn`.
 - DOT output defaults to `rankdir=TB` with labeled edges. The CLI can switch direction (`--rankdir LR`/`RL`/`BT`), request Graphviz orthogonal routing (`--ortho`), hide edge labels (`--no-edge-labels`), and prune common runtime/library nodes (`--tree-shake-stdlib`).
+- Function order defaults to address order. `--function-order entryness` ranks entry/export/name anchors, address-taken uncalled callbacks, low caller count, transitive reach, dominator-subtree size, and shallow graph depth so top-level business logic appears earlier. `--function-order centrality` uses reciprocal rank fusion over weighted fan-in/out, PageRank, seeded PageRank, HITS, sampled betweenness, harmonic centrality, coreness, reachability, dominator mass, address-taken anchors, and size.
 - The CLI runs in its own idalib process and does not require launching the IDA GUI.
 
 ---
@@ -394,6 +402,8 @@ Every output that can go to the clipboard falls back to a select-all text dialog
 | **Copy to clipboard** | off | Skip the file; push the rendered output to the clipboard. |
 | **Include register summary** | off | Add per-function incoming/outgoing register lines. |
 | **Trim types to referenced fields only** | off | Reduce structs/unions to accessed members, padding the rest. |
+| **Sort functions by entry-ness** | off | Put likely entries, exports, callbacks, and call-graph gateways before leaf utilities. |
+| **Sort functions by centrality** | off | Put functions that rank highly across call-graph importance metrics before peripheral routines. |
 
 ### The PTN notation
 

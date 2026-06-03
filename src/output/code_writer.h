@@ -23,7 +23,8 @@ public:
         int callee_depth,
         int max_chars = 0,
         const std::string &type_decls = "",
-        bool omit_ptn = false
+        bool omit_ptn = false,
+        FunctionOrder function_order = FunctionOrder::Address
     );
 
     bool write(
@@ -36,7 +37,8 @@ public:
         int callee_depth,
         int max_chars = 0,
         const std::string &type_decls = "",
-        bool omit_ptn = false
+        bool omit_ptn = false,
+        FunctionOrder function_order = FunctionOrder::Address
     );
 
 private:
@@ -45,7 +47,9 @@ private:
         int caller_depth,
         int callee_depth,
         const std::map<ida::Address, FunctionSummary> &summaries,
-        bool omit_ptn
+        bool omit_ptn,
+        const std::vector<ida::Address> &ordered_functions,
+        FunctionOrder function_order
     );
 
     std::string build_function_block(

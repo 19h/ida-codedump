@@ -44,6 +44,21 @@ struct Edge {
     Edge(ida::Address f, ida::Address t, RefType rt) : from(f), to(t) { types.insert(rt); }
 };
 
+enum class FunctionOrder {
+    Address,
+    Entryness,
+    Centrality
+};
+
+inline const char* function_order_name(FunctionOrder order) {
+    switch (order) {
+        case FunctionOrder::Address:    return "address";
+        case FunctionOrder::Entryness:  return "entry-ness";
+        case FunctionOrder::Centrality: return "centrality";
+        default:                        return "address";
+    }
+}
+
 // Dump options (mirrors Python DumpOptionsForm)
 struct DumpOptions {
     int caller_depth = 2;
@@ -68,6 +83,7 @@ struct DumpOptions {
     bool dot_ortho = false; // Emit splines=ortho for DOT output
     bool dot_omit_edge_labels = false; // Keep edge colors/styles but omit ref-type labels in DOT output
     bool tree_shake_stdlib_functions = false; // Drop library/thunk/common runtime functions from graph walks
+    FunctionOrder function_order = FunctionOrder::Address; // Rendered function order
     int max_chars = 0;  // 0 = no limit
     std::string output_path;
 };

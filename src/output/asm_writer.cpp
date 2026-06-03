@@ -1,5 +1,7 @@
 #include "asm_writer.h"
 
+#include "analysis/function_ranker.h"
+
 #include <ida/database.hpp>
 
 #include <cstdlib>
@@ -16,14 +18,17 @@ std::string AsmWriter::render(
     PTNEmitter &emitter,
     int callee_depth,
     const std::string &type_decls,
-    bool omit_ptn
+    bool omit_ptn,
+    const std::vector<Edge> &edges,
+    const std::set<ida::Address> &start_functions,
+    FunctionOrder function_order
 ) {
-    // Sort functions by address
-    std::vector<ida::Address> sorted_funcs;
+    std::set<ida::Address> function_set;
     for (const auto &[ea, _] : summaries) {
-        sorted_funcs.push_back(ea);
+        function_set.insert(ea);
     }
-    std::sort(sorted_funcs.begin(), sorted_funcs.end());
+    std::vector<ida::Address> sorted_funcs =
+        order_functions(function_set, edges, start_functions, function_order);
 
     // Get per-instruction hints (skipped entirely when PTN is omitted)
     std::map<ida::Address, std::map<ida::Address, std::vector<std::string>>> hints;
@@ -143,10 +148,14 @@ bool AsmWriter::write(
     PTNEmitter &emitter,
     int callee_depth,
     const std::string &type_decls,
-    bool omit_ptn
+    bool omit_ptn,
+    const std::vector<Edge> &edges,
+    const std::set<ida::Address> &start_functions,
+    FunctionOrder function_order
 ) {
     std::string text = render(summaries, annotations, emitter, callee_depth,
-                              type_decls, omit_ptn);
+                              type_decls, omit_ptn, edges, start_functions,
+                              function_order);
     std::ofstream out(path);
     if (!out) return false;
     out << text;

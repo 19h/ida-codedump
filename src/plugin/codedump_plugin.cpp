@@ -334,7 +334,8 @@ static void dump_functions_impl(std::span<const ida::Address> start_funcs,
         CodeWriter cw;
         rendered = cw.render(summaries, annotations, edges, start_set,
                              opts.caller_depth, opts.callee_depth, opts.max_chars,
-                             type_decls, opts.omit_ptn);
+                             type_decls, opts.omit_ptn,
+                             opts.function_order);
         kind = "code";
         kind_count = summaries.size();
     }
@@ -365,7 +366,8 @@ static void dump_functions_impl(std::span<const ida::Address> start_funcs,
             summaries.size());
         AsmWriter aw;
         rendered = aw.render(summaries, annotations, ptn_emitter,
-                             opts.callee_depth, type_decls, opts.omit_ptn);
+                             opts.callee_depth, type_decls, opts.omit_ptn,
+                             edges, start_set, opts.function_order);
         kind = "asm";
         kind_count = summaries.size();
     }
@@ -507,7 +509,9 @@ static void show_dump_dialog(std::string_view output_type) {
         "<Include size comments (sizeof / off / size):C>\n"
         "<Copy to clipboard (skip file write):C>\n"
         "<Include register summary (incoming/outgoing regs):C>\n"
-        "<Trim types to referenced fields only (pad the rest):C>>\n"
+        "<Trim types to referenced fields only (pad the rest):C>\n"
+        "<Sort functions by entry-ness:C>\n"
+        "<Sort functions by centrality:C>>\n"
         "\n";
 
     sval_t caller_depth = 2;
@@ -547,6 +551,10 @@ static void show_dump_dialog(std::string_view output_type) {
     opts.copy_to_clipboard     = (options_check & 4) != 0;
     opts.register_summary      = (options_check & 8) != 0;
     opts.referenced_fields_only= (options_check & 16) != 0;
+    if ((options_check & 64) != 0)
+        opts.function_order = FunctionOrder::Centrality;
+    else if ((options_check & 32) != 0)
+        opts.function_order = FunctionOrder::Entryness;
 
     opts.include_direct_calls   = (xref_checks & (1 << 0)) != 0;
     opts.include_indirect_calls = (xref_checks & (1 << 1)) != 0;

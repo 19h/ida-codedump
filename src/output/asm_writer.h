@@ -3,6 +3,7 @@
 #include "common/types.h"
 #include "analysis/ptn_emitter.h"
 #include <map>
+#include <set>
 #include <vector>
 #include <string>
 
@@ -19,7 +20,10 @@ public:
         PTNEmitter &emitter,
         int callee_depth,
         const std::string &type_decls = "",
-        bool omit_ptn = false
+        bool omit_ptn = false,
+        const std::vector<Edge> &edges = std::vector<Edge>{},
+        const std::set<ida::Address> &start_functions = std::set<ida::Address>{},
+        FunctionOrder function_order = FunctionOrder::Address
     );
 
     bool write(
@@ -29,7 +33,10 @@ public:
         PTNEmitter &emitter,
         int callee_depth,
         const std::string &type_decls = "",
-        bool omit_ptn = false
+        bool omit_ptn = false,
+        const std::vector<Edge> &edges = std::vector<Edge>{},
+        const std::set<ida::Address> &start_functions = std::set<ida::Address>{},
+        FunctionOrder function_order = FunctionOrder::Address
     );
 };
 
