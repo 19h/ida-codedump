@@ -493,6 +493,8 @@ static void show_dump_dialog(std::string_view output_type) {
         "<#Depth of callers to traverse#Caller Depth:D:5:5::>\n"
         "<#Depth of callees/references to traverse#Callee Depth:D:5:5::>\n"
         "<#Maximum characters for output file (0=unlimited)#Max Characters:D:10:10::>\n"
+        "<#Subsystem clustering resolution/gamma for DOT output. "
+        "100 is the default; higher values usually produce smaller groups.#Cluster Resolution (%):D:5:5::>\n"
         "<#Output file path#Output File:f:1:64::>\n"
         "\n"
         "Xref Types\n"
@@ -511,12 +513,15 @@ static void show_dump_dialog(std::string_view output_type) {
         "<Include register summary (incoming/outgoing regs):C>\n"
         "<Trim types to referenced fields only (pad the rest):C>\n"
         "<Sort functions by entry-ness:C>\n"
-        "<Sort functions by centrality:C>>\n"
+        "<Sort functions by centrality:C>\n"
+        "<Cluster DOT by subsystem:C>\n"
+        "<Collapse subsystem edges:C>>\n"
         "\n";
 
     sval_t caller_depth = 2;
     sval_t callee_depth = 2;
     sval_t max_chars = 0;
+    sval_t cluster_resolution_pct = 100;
     std::string chosen = default_path;
     std::uint16_t xref_checks = 0x7F;
     std::uint16_t options_check = 0;
@@ -525,6 +530,7 @@ static void show_dump_dialog(std::string_view output_type) {
             ida::ui::form_sval(caller_depth),
             ida::ui::form_sval(callee_depth),
             ida::ui::form_sval(max_chars),
+            ida::ui::form_sval(cluster_resolution_pct),
             ida::ui::form_path(chosen),
             ida::ui::form_bitset(xref_checks),
             ida::ui::form_bitset(options_check))) {
@@ -545,6 +551,10 @@ static void show_dump_dialog(std::string_view output_type) {
     opts.caller_depth          = static_cast<int>(caller_depth);
     opts.callee_depth          = static_cast<int>(callee_depth);
     opts.max_chars             = static_cast<int>(max_chars);
+    int cluster_pct = static_cast<int>(cluster_resolution_pct);
+    if (cluster_pct <= 0) cluster_pct = 100;
+    opts.subsystem_cluster_resolution =
+        static_cast<double>(cluster_pct) / 100.0;
     opts.output_path           = chosen;
     opts.omit_ptn              = (options_check & 1) != 0;
     opts.size_comments         = (options_check & 2) != 0;
@@ -555,6 +565,10 @@ static void show_dump_dialog(std::string_view output_type) {
         opts.function_order = FunctionOrder::Centrality;
     else if ((options_check & 32) != 0)
         opts.function_order = FunctionOrder::Entryness;
+    opts.dot_cluster_subsystems = (options_check & 128) != 0;
+    opts.dot_collapse_subsystems = (options_check & 256) != 0;
+    if (opts.dot_collapse_subsystems)
+        opts.dot_cluster_subsystems = true;
 
     opts.include_direct_calls   = (xref_checks & (1 << 0)) != 0;
     opts.include_indirect_calls = (xref_checks & (1 << 1)) != 0;

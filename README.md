@@ -225,6 +225,12 @@ cdump [options] <input.idb|binary>
   --rankdir TB|LR|RL|BT     DOT graph direction. Default: TB.
   --ortho                   Emit splines=ortho for DOT output.
   --no-edge-labels          Omit DOT edge labels but keep colors/styles.
+  --cluster-subsystems      Group DOT nodes into deterministic subsystem
+                            subgraphs.
+  --collapse-subsystems     Hide intra-cluster DOT edges and aggregate one edge per
+                            directed cluster pair. Implies --cluster-subsystems.
+  --cluster-resolution X    Subsystem clustering gamma/resolution. Default: 1.0;
+                            higher values usually produce smaller groups.
   --tree-shake-stdlib       Drop library/thunk/common runtime functions such as
                             malloc, memcpy, printf, and std::... from graph walks.
   --function-order address|entryness|centrality
@@ -246,6 +252,8 @@ cdump -f 0x140001000,main -o out.c mybin
 cdump -f parse --callee-depth 3 --ptn --regs --offsets --trim-types mybin
 cdump -f main --callee-depth 2 --format dot -o graph.dot mybin.i64
 cdump -f main --callee-depth 2 --format dot --rankdir LR --ortho --no-edge-labels --tree-shake-stdlib mybin.i64
+cdump --format dot --cluster-subsystems --cluster-resolution 1.2 mybin.i64
+cdump --format dot --collapse-subsystems --cluster-resolution 1.2 mybin.i64
 cdump --format code --function-order entryness mybin.i64
 cdump --format code --function-order centrality mybin.i64
 ```
@@ -255,7 +263,8 @@ Key properties:
 - If every supplied `-f` spec fails to resolve, the current CLI falls back to all-functions mode.
 - Type declarations are collected only from decompiled functions in the dump; unused Local Types entries are not emitted.
 - Code and assembly outputs include resolved type declarations. DOT output uses discovered graph edges. Standalone PTN output is produced with `--format ptn`.
-- DOT output defaults to `rankdir=TB` with labeled edges. The CLI can switch direction (`--rankdir LR`/`RL`/`BT`), request Graphviz orthogonal routing (`--ortho`), hide edge labels (`--no-edge-labels`), and prune common runtime/library nodes (`--tree-shake-stdlib`).
+- DOT output defaults to `rankdir=TB` with labeled edges. The CLI can switch direction (`--rankdir LR`/`RL`/`BT`), request Graphviz orthogonal routing (`--ortho`), hide edge labels (`--no-edge-labels`), prune common runtime/library nodes (`--tree-shake-stdlib`), and group nodes with `--cluster-subsystems`.
+- DOT subsystem clustering builds an offline, deterministic weighted graph from call-site proximity, shared globals, shared imports, co-called functions, address locality, and resolved indirect/vtable edges. Ubiquitous resources are IDF-capped as stopwords, high-fan-in low-core utilities are hoisted into a utilities cluster, and the remaining functions are partitioned with resolution-controlled modularity. `--cluster-subsystems` keeps function-level edges; `--collapse-subsystems` renders an overview by hiding intra-cluster edges and aggregating cross-cluster edges into one compound edge per directed cluster pair.
 - Function order defaults to address order. `--function-order entryness` ranks entry/export/name anchors, address-taken uncalled callbacks, low caller count, transitive reach, dominator-subtree size, and shallow graph depth so top-level business logic appears earlier. `--function-order centrality` uses reciprocal rank fusion over weighted fan-in/out, PageRank, seeded PageRank, HITS, sampled betweenness, harmonic centrality, coreness, reachability, dominator mass, address-taken anchors, and size.
 - The CLI runs in its own idalib process and does not require launching the IDA GUI.
 
@@ -286,7 +295,7 @@ This is the headline use case: one `.c` file with the function, its neighbourhoo
 
 > **Good to know** Your start function is filled light blue. Edge colour encodes the call kind (direct = black, indirect = blue, data = green, immediate = orange, tail = red, virtual = purple, jump table = brown); indirect and virtual calls are dashed; the label lists every reference type joining two functions.
 
-> **CLI tip** For a wider, cleaner business-logic graph, use `--format dot --rankdir LR --ortho --no-edge-labels --tree-shake-stdlib`.
+> **CLI tip** For a wider, cleaner business-logic graph, use `--format dot --rankdir LR --ortho --no-edge-labels --tree-shake-stdlib --cluster-subsystems`. Add `--collapse-subsystems` for a high-level overview.
 
 ### Trace where a value comes from
 
@@ -395,6 +404,7 @@ Every output that can go to the clipboard falls back to a select-all text dialog
 | **Caller Depth** | 2 | How many layers of callers to walk up. |
 | **Callee Depth** | 2 | How many layers of callees/references to walk down. Also bounds PTN chain forwarding. |
 | **Max Characters** | 0 | Output size cap; `0` = unlimited. Over the cap, smallest non-root functions are dropped first. |
+| **Cluster Resolution (%)** | 100 | DOT subsystem clustering granularity; higher values usually produce smaller groups. |
 | **Output File** | next to the input/IDB | Destination path. A directory is accepted; the default filename is appended. |
 | **Xref Types** | all on | Which of the seven edge kinds the graph walk follows (direct, indirect, data, immediate, tail, virtual, jump table). |
 | **Omit PTN annotations** | off | Skip all provenance output. |
@@ -404,6 +414,8 @@ Every output that can go to the clipboard falls back to a select-all text dialog
 | **Trim types to referenced fields only** | off | Reduce structs/unions to accessed members, padding the rest. |
 | **Sort functions by entry-ness** | off | Put likely entries, exports, callbacks, and call-graph gateways before leaf utilities. |
 | **Sort functions by centrality** | off | Put functions that rank highly across call-graph importance metrics before peripheral routines. |
+| **Cluster DOT by subsystem** | off | Group DOT nodes into subsystem subgraphs and hoist common utilities into a separate cluster. |
+| **Collapse subsystem edges** | off | DOT overview mode: hide edges inside clusters and aggregate cross-cluster edges. Implies subsystem clustering. |
 
 ### The PTN notation
 

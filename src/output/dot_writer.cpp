@@ -1,6 +1,7 @@
 #include "dot_writer.h"
 
 #include "analysis/function_ranker.h"
+#include "analysis/subsystem_clusterer.h"
 #include "common/function_filter.h"
 
 #include <ida/function.hpp>
@@ -9,6 +10,7 @@
 #include <cctype>
 #include <format>
 #include <fstream>
+#include <map>
 #include <sstream>
 
 namespace codedump {
@@ -87,6 +89,8 @@ std::string DotWriter::render(
     out << "    rankdir=" << normalized_rankdir(opts) << ";\n";
     if (opts.dot_ortho)
         out << "    splines=ortho;\n";
+    if (opts.dot_cluster_subsystems)
+        out << "    compound=true;\n";
     out << "    node [shape=box fontname=\"Courier\" fontsize=10];\n";
     out << "    edge [fontname=\"Courier\" fontsize=8];\n\n";
 
@@ -94,8 +98,14 @@ std::string DotWriter::render(
         order_functions(rendered_functions, edges, start_functions,
                         opts.function_order);
 
-    // Write nodes
-    for (ida::Address ea : ordered_functions) {
+    SubsystemClustering clustering;
+    std::map<int, ida::Address> cluster_anchor;
+    if (opts.dot_cluster_subsystems) {
+        clustering = cluster_subsystems(
+            rendered_functions, edges, opts.subsystem_cluster_resolution);
+    }
+
+    auto write_node = [&](ida::Address ea, const std::string &indent) {
         ida::Result<std::string> name = ida::function::name_at(ea);
         std::string label = (name && !name->empty()) ? *name : "?";
 
@@ -106,22 +116,115 @@ std::string DotWriter::render(
             style = " style=filled fillcolor=lightblue";
         }
 
-        out << "    " << node_id << " [label=\"" << label << "\"" << style << "];\n";
+        out << indent << node_id << " [label=\"" << label << "\"" << style << "];\n";
+    };
+
+    if (opts.dot_cluster_subsystems) {
+        std::set<ida::Address> emitted;
+
+        for (const SubsystemCluster &cluster : clustering.clusters) {
+            if (cluster.functions.empty()) continue;
+            out << "    subgraph cluster_" << cluster.id << " {\n";
+            out << "        label=\"" << cluster.label << "\";\n";
+            out << "        style=\"" << (cluster.utility ? "dashed,rounded" : "rounded") << "\";\n";
+            out << "        color=\"" << (cluster.utility ? "gray60" : "gray35") << "\";\n";
+            out << "        fontname=\"Courier\";\n";
+            out << "        fontsize=10;\n";
+
+            std::set<ida::Address> cluster_functions(
+                cluster.functions.begin(), cluster.functions.end());
+            for (ida::Address ea : ordered_functions) {
+                if (!cluster_functions.count(ea)) continue;
+                if (!cluster_anchor.count(cluster.id))
+                    cluster_anchor[cluster.id] = ea;
+                write_node(ea, "        ");
+                emitted.insert(ea);
+            }
+            out << "    }\n";
+        }
+
+        for (ida::Address ea : ordered_functions) {
+            if (emitted.count(ea)) continue;
+            write_node(ea, "    ");
+        }
+    } else {
+        // Write nodes
+        for (ida::Address ea : ordered_functions) {
+            write_node(ea, "    ");
+        }
     }
 
     out << "\n";
 
-    // Write edges
-    for (const auto &edge : edges) {
-        if (!rendered_functions.count(edge.from) || !rendered_functions.count(edge.to))
-            continue;
+    auto write_edge = [&](ida::Address from, ida::Address to,
+                          const std::set<RefType> &types,
+                          const std::string &extra_attrs = "") {
+        std::string from_id = std::format("f_{:x}", from);
+        std::string to_id = std::format("f_{:x}", to);
+        std::string attrs = get_edge_style(types, !opts.dot_omit_edge_labels);
+        out << "    " << from_id << " -> " << to_id << " [" << attrs;
+        if (!extra_attrs.empty())
+            out << " " << extra_attrs;
+        out << "];\n";
+    };
 
-        std::string from_id = std::format("f_{:x}", edge.from);
-        std::string to_id = std::format("f_{:x}", edge.to);
+    if (opts.dot_cluster_subsystems
+        && opts.dot_collapse_subsystems
+        && !cluster_anchor.empty()) {
+        struct AggregatedEdge {
+            ida::Address from = ida::BadAddress;
+            ida::Address to = ida::BadAddress;
+            std::set<RefType> types;
+            int count = 0;
+        };
+        std::map<std::pair<int, int>, AggregatedEdge> cluster_edges;
 
-        std::string attrs = get_edge_style(edge.types, !opts.dot_omit_edge_labels);
+        for (const auto &edge : edges) {
+            if (!rendered_functions.count(edge.from) || !rendered_functions.count(edge.to))
+                continue;
 
-        out << "    " << from_id << " -> " << to_id << " [" << attrs << "];\n";
+            auto from_cluster = clustering.cluster_by_function.find(edge.from);
+            auto to_cluster = clustering.cluster_by_function.find(edge.to);
+            if (from_cluster == clustering.cluster_by_function.end()
+                || to_cluster == clustering.cluster_by_function.end()) {
+                write_edge(edge.from, edge.to, edge.types);
+                continue;
+            }
+
+            int from_id = from_cluster->second;
+            int to_id = to_cluster->second;
+            if (from_id == to_id)
+                continue;
+
+            auto &aggregated =
+                cluster_edges[std::make_pair(from_id, to_id)];
+            aggregated.from = cluster_anchor[from_id];
+            aggregated.to = cluster_anchor[to_id];
+            aggregated.types.insert(edge.types.begin(), edge.types.end());
+            ++aggregated.count;
+        }
+
+        for (const auto &[cluster_pair, aggregated] : cluster_edges) {
+            std::ostringstream extra;
+            extra << "ltail=\"cluster_" << cluster_pair.first << "\" "
+                  << "lhead=\"cluster_" << cluster_pair.second << "\"";
+            if (aggregated.count > 1) {
+                double penwidth = std::min(
+                    5.0, 1.0 + static_cast<double>(aggregated.count) * 0.35);
+                extra << " penwidth=" << penwidth
+                      << " weight=" << aggregated.count;
+            }
+            write_edge(aggregated.from, aggregated.to,
+                       aggregated.types, extra.str());
+        }
+    } else {
+        // Write edges
+        for (const auto &edge : edges) {
+            if (!rendered_functions.count(edge.from) || !rendered_functions.count(edge.to))
+                continue;
+
+            write_edge(edge.from, edge.to, edge.types);
+        }
     }
 
     out << "}\n";

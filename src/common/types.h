@@ -82,6 +82,9 @@ struct DumpOptions {
     std::string dot_rankdir = "TB"; // Graphviz rankdir for DOT output: TB, LR, RL, BT
     bool dot_ortho = false; // Emit splines=ortho for DOT output
     bool dot_omit_edge_labels = false; // Keep edge colors/styles but omit ref-type labels in DOT output
+    bool dot_cluster_subsystems = false; // Group DOT nodes into subsystem clusters
+    bool dot_collapse_subsystems = false; // Hide intra-cluster DOT edges and aggregate inter-cluster edges
+    double subsystem_cluster_resolution = 1.0; // Louvain/RB modularity gamma; higher = smaller clusters
     bool tree_shake_stdlib_functions = false; // Drop library/thunk/common runtime functions from graph walks
     FunctionOrder function_order = FunctionOrder::Address; // Rendered function order
     int max_chars = 0;  // 0 = no limit

@@ -49,6 +49,7 @@ ida_add_plugin(codedump
         src/common/function_filter.cpp
         src/graph/graph_builder.cpp
         src/analysis/function_ranker.cpp
+        src/analysis/subsystem_clusterer.cpp
         src/analysis/ctree_analyzer.cpp
         src/analysis/ptn_emitter.cpp
         src/analysis/register_analyzer.cpp
@@ -189,6 +190,7 @@ if(CODEDUMP_BUILD_CLI)
         src/common/function_filter.cpp
         src/graph/graph_builder.cpp
         src/analysis/function_ranker.cpp
+        src/analysis/subsystem_clusterer.cpp
         src/analysis/ctree_analyzer.cpp
         src/analysis/ptn_emitter.cpp
         src/analysis/register_analyzer.cpp

@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -87,6 +88,9 @@ struct Cli {
     std::string dot_rankdir = "TB";
     bool dot_ortho = false;
     bool dot_omit_edge_labels = false;
+    bool dot_cluster_subsystems = false;
+    bool dot_collapse_subsystems = false;
+    double subsystem_cluster_resolution = 1.0;
     bool tree_shake_stdlib_functions = false;
     codedump::FunctionOrder function_order = codedump::FunctionOrder::Address;
 };
@@ -132,6 +136,13 @@ Options:
   --ortho, --no-ortho      Use Graphviz orthogonal edge routing for DOT.
   --no-edge-labels, --omit-edge-labels
                            Omit DOT edge labels while keeping edge colors/styles.
+  --cluster-subsystems, --subsystem-clusters
+                           Group DOT nodes into deterministic subsystem clusters.
+  --collapse-subsystems, --collapse-clusters
+                           Hide intra-cluster DOT edges and aggregate one edge per
+                           directed cluster pair. Implies --cluster-subsystems.
+  --cluster-resolution <x> Louvain/RB modularity gamma for subsystem clusters
+                           (default 1.0; higher usually means smaller clusters).
   --tree-shake-stdlib      Drop IDA library/thunk and common runtime functions
                            (malloc/memcpy/printf/std::... etc.) from graph walks.
   --function-order <address|entryness|centrality>
@@ -180,6 +191,14 @@ static bool parse_int(const char* s, int& out) {
     long v = std::strtol(s, &end, 10);
     if (end == s || *end != '\0' || v < 0) return false;
     out = static_cast<int>(v);
+    return true;
+}
+
+static bool parse_double(const char* s, double& out) {
+    char* end = nullptr;
+    double v = std::strtod(s, &end);
+    if (end == s || *end != '\0' || !std::isfinite(v) || v <= 0.0) return false;
+    out = v;
     return true;
 }
 
@@ -288,6 +307,22 @@ static bool parse_cli(int argc, char** argv, Cli& cli) {
             cli.dot_omit_edge_labels = true;
         } else if (a == "--edge-labels") {
             cli.dot_omit_edge_labels = false;
+        } else if (a == "--cluster-subsystems" || a == "--subsystem-clusters") {
+            cli.dot_cluster_subsystems = true;
+        } else if (a == "--no-cluster-subsystems" || a == "--no-subsystem-clusters") {
+            cli.dot_cluster_subsystems = false;
+            cli.dot_collapse_subsystems = false;
+        } else if (a == "--collapse-subsystems" || a == "--collapse-clusters") {
+            cli.dot_cluster_subsystems = true;
+            cli.dot_collapse_subsystems = true;
+        } else if (a == "--no-collapse-subsystems" || a == "--no-collapse-clusters") {
+            cli.dot_collapse_subsystems = false;
+        } else if (a == "--cluster-resolution" || a == "--subsystem-resolution") {
+            const char* v = next();
+            if (!v || !parse_double(v, cli.subsystem_cluster_resolution)) {
+                std::cerr << "Error: " << a << " needs positive number\n";
+                return false;
+            }
         } else if (a == "--tree-shake-stdlib" || a == "--shake-stdlib") {
             cli.tree_shake_stdlib_functions = true;
         } else if (a == "--no-tree-shake-stdlib" || a == "--no-shake-stdlib") {
@@ -450,6 +485,9 @@ int main(int argc, char** argv) {
     opts.dot_rankdir = cli.dot_rankdir;
     opts.dot_ortho = cli.dot_ortho;
     opts.dot_omit_edge_labels = cli.dot_omit_edge_labels;
+    opts.dot_cluster_subsystems = cli.dot_cluster_subsystems;
+    opts.dot_collapse_subsystems = cli.dot_collapse_subsystems;
+    opts.subsystem_cluster_resolution = cli.subsystem_cluster_resolution;
     opts.tree_shake_stdlib_functions = cli.tree_shake_stdlib_functions;
     opts.function_order = cli.function_order;
     opts.output_code = (cli.format == "code");
