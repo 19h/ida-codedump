@@ -229,6 +229,8 @@ cdump [options] <input.idb|binary>
                             subgraphs.
   --collapse-subsystems     Hide intra-cluster DOT edges and aggregate one edge per
                             directed cluster pair. Implies --cluster-subsystems.
+  --cluster-only            Render only subsystem meta-nodes and aggregate edges
+                            between clusters. Implies --cluster-subsystems.
   --cluster-resolution X    Subsystem clustering gamma/resolution. Default: 1.0;
                             higher values usually produce smaller groups.
   --tree-shake-stdlib       Drop library/thunk/common runtime functions such as
@@ -254,6 +256,7 @@ cdump -f main --callee-depth 2 --format dot -o graph.dot mybin.i64
 cdump -f main --callee-depth 2 --format dot --rankdir LR --ortho --no-edge-labels --tree-shake-stdlib mybin.i64
 cdump --format dot --cluster-subsystems --cluster-resolution 1.2 mybin.i64
 cdump --format dot --collapse-subsystems --cluster-resolution 1.2 mybin.i64
+cdump --format dot --cluster-only --cluster-resolution 1.2 mybin.i64
 cdump --format code --function-order entryness mybin.i64
 cdump --format code --function-order centrality mybin.i64
 ```
@@ -264,7 +267,7 @@ Key properties:
 - Type declarations are collected only from decompiled functions in the dump; unused Local Types entries are not emitted.
 - Code and assembly outputs include resolved type declarations. DOT output uses discovered graph edges. Standalone PTN output is produced with `--format ptn`.
 - DOT output defaults to `rankdir=TB` with labeled edges. The CLI can switch direction (`--rankdir LR`/`RL`/`BT`), request Graphviz orthogonal routing (`--ortho`), hide edge labels (`--no-edge-labels`), prune common runtime/library nodes (`--tree-shake-stdlib`), and group nodes with `--cluster-subsystems`.
-- DOT subsystem clustering builds an offline, deterministic weighted graph from call-site proximity, shared globals, shared imports, co-called functions, address locality, and resolved indirect/vtable edges. Ubiquitous resources are IDF-capped as stopwords, high-fan-in low-core utilities are hoisted into a utilities cluster, and the remaining functions are partitioned with resolution-controlled modularity. `--cluster-subsystems` keeps function-level edges; `--collapse-subsystems` renders an overview by hiding intra-cluster edges and aggregating cross-cluster edges into one compound edge per directed cluster pair.
+- DOT subsystem clustering builds an offline, deterministic weighted graph from call-site proximity, shared globals, shared imports, co-called functions, address locality, and resolved indirect/vtable edges. Ubiquitous resources are IDF-capped as stopwords, high-fan-in low-core utilities are hoisted into a utilities cluster, and the remaining functions are partitioned with resolution-controlled modularity. `--cluster-subsystems` keeps function-level edges; `--collapse-subsystems` renders grouped functions with intra-cluster edges hidden and cross-cluster edges aggregated; `--cluster-only` renders only subsystem meta-nodes and their aggregate edges.
 - Function order defaults to address order. `--function-order entryness` ranks entry/export/name anchors, address-taken uncalled callbacks, low caller count, transitive reach, dominator-subtree size, and shallow graph depth so top-level business logic appears earlier. `--function-order centrality` uses reciprocal rank fusion over weighted fan-in/out, PageRank, seeded PageRank, HITS, sampled betweenness, harmonic centrality, coreness, reachability, dominator mass, address-taken anchors, and size.
 - The CLI runs in its own idalib process and does not require launching the IDA GUI.
 
@@ -295,7 +298,7 @@ This is the headline use case: one `.c` file with the function, its neighbourhoo
 
 > **Good to know** Your start function is filled light blue. Edge colour encodes the call kind (direct = black, indirect = blue, data = green, immediate = orange, tail = red, virtual = purple, jump table = brown); indirect and virtual calls are dashed; the label lists every reference type joining two functions.
 
-> **CLI tip** For a wider, cleaner business-logic graph, use `--format dot --rankdir LR --ortho --no-edge-labels --tree-shake-stdlib --cluster-subsystems`. Add `--collapse-subsystems` for a high-level overview.
+> **CLI tip** For a wider, cleaner business-logic graph, use `--format dot --rankdir LR --ortho --no-edge-labels --tree-shake-stdlib --cluster-subsystems`. Use `--cluster-only` for the highest-level subsystem map.
 
 ### Trace where a value comes from
 
@@ -416,6 +419,7 @@ Every output that can go to the clipboard falls back to a select-all text dialog
 | **Sort functions by centrality** | off | Put functions that rank highly across call-graph importance metrics before peripheral routines. |
 | **Cluster DOT by subsystem** | off | Group DOT nodes into subsystem subgraphs and hoist common utilities into a separate cluster. |
 | **Collapse subsystem edges** | off | DOT overview mode: hide edges inside clusters and aggregate cross-cluster edges. Implies subsystem clustering. |
+| **Render only subsystem nodes** | off | Render one meta-node per subsystem and only aggregate inter-subsystem edges. Implies subsystem clustering. |
 
 ### The PTN notation
 

@@ -515,7 +515,8 @@ static void show_dump_dialog(std::string_view output_type) {
         "<Sort functions by entry-ness:C>\n"
         "<Sort functions by centrality:C>\n"
         "<Cluster DOT by subsystem:C>\n"
-        "<Collapse subsystem edges:C>>\n"
+        "<Collapse subsystem edges:C>\n"
+        "<Render only subsystem nodes:C>>\n"
         "\n";
 
     sval_t caller_depth = 2;
@@ -567,7 +568,8 @@ static void show_dump_dialog(std::string_view output_type) {
         opts.function_order = FunctionOrder::Entryness;
     opts.dot_cluster_subsystems = (options_check & 128) != 0;
     opts.dot_collapse_subsystems = (options_check & 256) != 0;
-    if (opts.dot_collapse_subsystems)
+    opts.dot_cluster_only = (options_check & 512) != 0;
+    if (opts.dot_collapse_subsystems || opts.dot_cluster_only)
         opts.dot_cluster_subsystems = true;
 
     opts.include_direct_calls   = (xref_checks & (1 << 0)) != 0;

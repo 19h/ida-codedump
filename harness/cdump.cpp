@@ -90,6 +90,7 @@ struct Cli {
     bool dot_omit_edge_labels = false;
     bool dot_cluster_subsystems = false;
     bool dot_collapse_subsystems = false;
+    bool dot_cluster_only = false;
     double subsystem_cluster_resolution = 1.0;
     bool tree_shake_stdlib_functions = false;
     codedump::FunctionOrder function_order = codedump::FunctionOrder::Address;
@@ -141,6 +142,9 @@ Options:
   --collapse-subsystems, --collapse-clusters
                            Hide intra-cluster DOT edges and aggregate one edge per
                            directed cluster pair. Implies --cluster-subsystems.
+  --cluster-only, --only-clusters
+                           Render only subsystem meta-nodes and aggregate edges
+                           between clusters. Implies --cluster-subsystems.
   --cluster-resolution <x> Louvain/RB modularity gamma for subsystem clusters
                            (default 1.0; higher usually means smaller clusters).
   --tree-shake-stdlib      Drop IDA library/thunk and common runtime functions
@@ -312,11 +316,19 @@ static bool parse_cli(int argc, char** argv, Cli& cli) {
         } else if (a == "--no-cluster-subsystems" || a == "--no-subsystem-clusters") {
             cli.dot_cluster_subsystems = false;
             cli.dot_collapse_subsystems = false;
+            cli.dot_cluster_only = false;
         } else if (a == "--collapse-subsystems" || a == "--collapse-clusters") {
             cli.dot_cluster_subsystems = true;
             cli.dot_collapse_subsystems = true;
         } else if (a == "--no-collapse-subsystems" || a == "--no-collapse-clusters") {
             cli.dot_collapse_subsystems = false;
+        } else if (a == "--cluster-only" || a == "--only-clusters" ||
+                   a == "--subsystem-only" || a == "--only-subsystems") {
+            cli.dot_cluster_subsystems = true;
+            cli.dot_cluster_only = true;
+        } else if (a == "--no-cluster-only" || a == "--no-only-clusters" ||
+                   a == "--no-subsystem-only" || a == "--no-only-subsystems") {
+            cli.dot_cluster_only = false;
         } else if (a == "--cluster-resolution" || a == "--subsystem-resolution") {
             const char* v = next();
             if (!v || !parse_double(v, cli.subsystem_cluster_resolution)) {
@@ -487,6 +499,7 @@ int main(int argc, char** argv) {
     opts.dot_omit_edge_labels = cli.dot_omit_edge_labels;
     opts.dot_cluster_subsystems = cli.dot_cluster_subsystems;
     opts.dot_collapse_subsystems = cli.dot_collapse_subsystems;
+    opts.dot_cluster_only = cli.dot_cluster_only;
     opts.subsystem_cluster_resolution = cli.subsystem_cluster_resolution;
     opts.tree_shake_stdlib_functions = cli.tree_shake_stdlib_functions;
     opts.function_order = cli.function_order;
