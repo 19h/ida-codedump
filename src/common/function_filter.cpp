@@ -6,6 +6,7 @@
 #include <cctype>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace codedump {
 
@@ -119,6 +120,85 @@ bool looks_like_runtime_name(std::string_view raw_name) {
     return exact_runtime_name(name) || runtime_name_prefix(name);
 }
 
+std::string strip_c_comments(std::string_view text) {
+    enum class State {
+        Normal,
+        LineComment,
+        BlockComment,
+        StringLiteral,
+        CharLiteral
+    };
+
+    std::string out;
+    out.reserve(text.size());
+    State state = State::Normal;
+    bool escaped = false;
+
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        char c = text[i];
+        char n = (i + 1 < text.size()) ? text[i + 1] : '\0';
+
+        switch (state) {
+            case State::Normal:
+                if (c == '/' && n == '/') {
+                    state = State::LineComment;
+                    ++i;
+                } else if (c == '/' && n == '*') {
+                    state = State::BlockComment;
+                    ++i;
+                } else {
+                    out.push_back(c);
+                    if (c == '"') {
+                        state = State::StringLiteral;
+                        escaped = false;
+                    } else if (c == '\'') {
+                        state = State::CharLiteral;
+                        escaped = false;
+                    }
+                }
+                break;
+
+            case State::LineComment:
+                if (c == '\n') {
+                    out.push_back(c);
+                    state = State::Normal;
+                }
+                break;
+
+            case State::BlockComment:
+                if (c == '*' && n == '/') {
+                    state = State::Normal;
+                    ++i;
+                }
+                break;
+
+            case State::StringLiteral:
+                out.push_back(c);
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '"') {
+                    state = State::Normal;
+                }
+                break;
+
+            case State::CharLiteral:
+                out.push_back(c);
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '\'') {
+                    state = State::Normal;
+                }
+                break;
+        }
+    }
+
+    return out;
+}
+
 } // namespace
 
 bool is_system_function(ida::Address ea) {
@@ -130,6 +210,64 @@ bool is_system_function(ida::Address ea) {
 
     ida::Result<std::string> name = ida::function::name_at(ea);
     return name && looks_like_runtime_name(*name);
+}
+
+bool decompiled_function_is_empty(std::string_view code) {
+    if (code.empty()) return false;
+
+    std::size_t open = code.find('{');
+    std::size_t close = code.rfind('}');
+    if (open == std::string_view::npos
+        || close == std::string_view::npos
+        || close <= open)
+        return false;
+
+    std::string body = strip_c_comments(code.substr(open + 1, close - open - 1));
+    std::string compact;
+    compact.reserve(body.size());
+    for (unsigned char c : body) {
+        if (std::isspace(c) == 0)
+            compact.push_back(static_cast<char>(c));
+    }
+
+    return compact.empty() || compact == ";";
+}
+
+std::set<ida::Address> prune_empty_functions(
+    std::map<ida::Address, FunctionSummary> &summaries,
+    std::vector<Edge> &edges
+) {
+    std::set<ida::Address> removed;
+    for (const auto &[ea, summary] : summaries) {
+        if (decompiled_function_is_empty(summary.decompiled_code))
+            removed.insert(ea);
+    }
+
+    if (removed.empty()) return removed;
+
+    for (ida::Address ea : removed)
+        summaries.erase(ea);
+
+    for (auto &[_, summary] : summaries) {
+        auto &arg_uses = summary.arg_uses;
+        arg_uses.erase(
+            std::remove_if(arg_uses.begin(), arg_uses.end(),
+                [&](const ArgUse &au) {
+                    return au.callee_ea != ida::BadAddress
+                        && removed.count(au.callee_ea) != 0;
+                }),
+            arg_uses.end());
+    }
+
+    edges.erase(
+        std::remove_if(edges.begin(), edges.end(),
+            [&](const Edge &edge) {
+                return removed.count(edge.from) != 0
+                    || removed.count(edge.to) != 0;
+            }),
+        edges.end());
+
+    return removed;
 }
 
 } // namespace codedump

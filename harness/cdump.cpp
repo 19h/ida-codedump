@@ -75,6 +75,7 @@ struct Cli {
     bool size_comments = false;
     bool register_summary = false;
     bool referenced_fields_only = false;
+    bool prune_empty_functions = true;
 
     bool include_direct_calls = true;
     bool include_indirect_calls = true;
@@ -129,6 +130,9 @@ Options:
   --trim, --trim-types, --referenced-only
                            Trim structs/unions to only referenced fields (pad rest).
   --no-trim                Include full types (default).
+  --prune-empty-functions  Drop empty decompiler stubs and xrefs to them (default).
+  --keep-empty-functions, --no-prune-empty-functions
+                           Keep empty decompiler stubs in text dumps.
 
   --no-direct-calls, --no-indirect-calls, --no-data-refs,
   --no-immediate-refs, --no-tail-calls, --no-virtual-calls, --no-jump-tables
@@ -213,6 +217,13 @@ static std::string upper_ascii(std::string text) {
     return text;
 }
 
+static std::string lower_ascii(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return text;
+}
+
 static bool is_valid_rankdir(std::string_view value) {
     return value == "TB" || value == "LR" || value == "RL" || value == "BT";
 }
@@ -267,6 +278,11 @@ static bool parse_cli(int argc, char** argv, Cli& cli) {
             cli.referenced_fields_only = true;
         } else if (a == "--no-trim" || a == "--no-referenced-only") {
             cli.referenced_fields_only = false;
+        } else if (a == "--prune-empty-functions" || a == "--drop-empty-functions") {
+            cli.prune_empty_functions = true;
+        } else if (a == "--keep-empty-functions" || a == "--no-prune-empty-functions" ||
+                   a == "--no-drop-empty-functions") {
+            cli.prune_empty_functions = false;
         } else if (a == "--no-direct-calls") {
             cli.include_direct_calls = false;
         } else if (a == "--direct-calls") {
@@ -412,6 +428,35 @@ static ida::Address resolve_spec(const std::string& spec) {
     return ida::BadAddress;
 }
 
+static std::vector<std::string> find_function_name_matches(const std::string& spec,
+                                                           std::size_t limit = 5) {
+    std::vector<std::string> matches;
+    std::set<ida::Address> seen;
+    std::string needle = lower_ascii(spec);
+    if (needle.empty()) return matches;
+
+    auto consider = [&](ida::Address ea, const std::string& name) {
+        if (matches.size() >= limit || name.empty()) return;
+        if (lower_ascii(name).find(needle) == std::string::npos) return;
+        if (!seen.insert(ea).second) return;
+        matches.push_back(std::format("{} (0x{:x})",
+                                      name,
+                                      static_cast<unsigned long long>(ea)));
+    };
+
+    auto n = ida::function::count().value_or(0);
+    for (size_t i = 0; i < n && matches.size() < limit; ++i) {
+        auto f = ida::function::by_index(i);
+        if (!f) continue;
+        consider(f->start(), f->name());
+        if (matches.size() >= limit) break;
+        auto demangled = ida::name::demangled(f->start());
+        if (demangled) consider(f->start(), *demangled);
+    }
+
+    return matches;
+}
+
 static void progress(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -453,21 +498,47 @@ int main(int argc, char** argv) {
 
     // resolve -f specs now that DB is open
     std::vector<ida::Address> requested;
+    std::vector<std::string> unresolved_specs;
     for (const auto& spec : cli.func_specs) {
         auto ea = resolve_spec(spec);
         if (ea == ida::BadAddress) {
-            if (cli.verbose) progress("[cdump] warning: could not resolve '%s'\n", spec.c_str());
+            unresolved_specs.push_back(spec);
             continue;
         }
         auto f = ida::function::at(ea);
         if (f) {
             requested.push_back(f->start());
-        } else if (cli.verbose) {
-            progress("[cdump] warning: %s is not a function\n", spec.c_str());
+        } else {
+            unresolved_specs.push_back(spec);
         }
     }
 
-    bool dumping_all = requested.empty();
+    if (!cli.func_specs.empty() && requested.empty()) {
+        std::cerr << "Error: none of the -f/--functions specs resolved to a function:";
+        for (const auto& spec : unresolved_specs)
+            std::cerr << " " << spec;
+        std::cerr << "\n";
+        for (const auto& spec : unresolved_specs) {
+            auto matches = find_function_name_matches(spec);
+            if (matches.empty()) continue;
+            std::cerr << "Closest matches for '" << spec << "':\n";
+            for (const auto& match : matches)
+                std::cerr << "  " << match << "\n";
+        }
+        (void)ida::database::close(false);
+        return 2;
+    }
+
+    if (!cli.quiet) {
+        for (const auto& spec : unresolved_specs) {
+            progress("[cdump] warning: could not resolve '%s' to a function\n", spec.c_str());
+            auto matches = find_function_name_matches(spec, 3);
+            for (const auto& match : matches)
+                progress("[cdump]   candidate: %s\n", match.c_str());
+        }
+    }
+
+    bool dumping_all = cli.func_specs.empty();
     if (!cli.quiet) {
         if (dumping_all) {
             auto n = ida::function::count().value_or(0);
@@ -487,6 +558,7 @@ int main(int argc, char** argv) {
     opts.size_comments = cli.size_comments;
     opts.register_summary = cli.register_summary;
     opts.referenced_fields_only = cli.referenced_fields_only;
+    opts.prune_empty_functions = cli.prune_empty_functions;
     opts.include_direct_calls = cli.include_direct_calls;
     opts.include_indirect_calls = cli.include_indirect_calls;
     opts.include_data_refs = cli.include_data_refs;
@@ -641,6 +713,15 @@ int main(int argc, char** argv) {
         }
     }
 
+    std::set<ida::Address> removed_empty_functions;
+    if (needs_prov && opts.prune_empty_functions) {
+        removed_empty_functions = codedump::prune_empty_functions(summaries, edges);
+        if (!cli.quiet && !removed_empty_functions.empty()) {
+            progress("[cdump] pruned %zu empty function(s)\n",
+                     removed_empty_functions.size());
+        }
+    }
+
     // PTN annotations (only if needed and not omitted)
     codedump::PTNEmitter ptn_emitter(summaries);
     std::map<ida::Address, std::string> annotations;
@@ -667,7 +748,8 @@ int main(int argc, char** argv) {
         codedump::CodeWriter cw;
         rendered = cw.render(summaries, annotations, edges, start_set,
                              h_call, h_callee, cli.max_chars, type_decls,
-                             opts.omit_ptn, opts.function_order);
+                             opts.omit_ptn, opts.function_order,
+                             &removed_empty_functions);
     } else if (cli.format == "dot") {
         codedump::DotWriter dw;
         rendered = dw.render(func_set, edges, start_set, opts);

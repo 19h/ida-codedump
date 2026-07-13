@@ -221,6 +221,9 @@ cdump [options] <input.idb|binary>
   --offsets, --size-comments
                             Annotate types with member offsets, sizes, and sizeof.
   --trim, --referenced-only Trim structs/unions to referenced fields.
+  --prune-empty-functions   Drop empty decompiler stubs and xrefs to them in
+                            text dumps. Default: on.
+  --keep-empty-functions    Keep empty decompiler stubs.
   --no-direct-calls ...     Disable graph-walk xref kinds; one flag per xref kind.
   --rankdir TB|LR|RL|BT     DOT graph direction. Default: TB.
   --ortho                   Emit splines=ortho for DOT output.
@@ -400,25 +403,40 @@ Common goals as concrete option sets:
 
 Every output that can go to the clipboard falls back to a select-all text dialog when no clipboard backend is available.
 
-### The code/dot/ptn/asm dump dialog
+### The code/PTN/ASM dump dialog
 
 | Field | Default | Meaning |
 |-------|---------|---------|
 | **Caller Depth** | 2 | How many layers of callers to walk up. |
 | **Callee Depth** | 2 | How many layers of callees/references to walk down. Also bounds PTN chain forwarding. |
 | **Max Characters** | 0 | Output size cap; `0` = unlimited. Over the cap, smallest non-root functions are dropped first. |
-| **Cluster Resolution (%)** | 100 | DOT subsystem clustering granularity; higher values usually produce smaller groups. |
 | **Output File** | next to the input/IDB | Destination path. A directory is accepted; the default filename is appended. |
 | **Xref Types** | all on | Which of the seven edge kinds the graph walk follows (direct, indirect, data, immediate, tail, virtual, jump table). |
+| **Remove empty functions and xrefs** | on | Drop decompiler stubs whose body is empty or just `;`, and remove xrefs/PTN annotations pointing at them. |
 | **Omit PTN annotations** | off | Skip all provenance output. |
 | **Include size comments** | off | Annotate type members with offset/size and structs with `sizeof`. |
 | **Copy to clipboard** | off | Skip the file; push the rendered output to the clipboard. |
 | **Include register summary** | off | Add per-function incoming/outgoing register lines. |
 | **Trim types to referenced fields only** | off | Reduce structs/unions to accessed members, padding the rest. |
+| **Tree-shake stdlib/runtime functions** | off | Drop library, thunk, and common runtime functions during graph walks. |
 | **Sort functions by entry-ness** | off | Put likely entries, exports, callbacks, and call-graph gateways before leaf utilities. |
 | **Sort functions by centrality** | off | Put functions that rank highly across call-graph importance metrics before peripheral routines. |
-| **Cluster DOT by subsystem** | off | Group DOT nodes into subsystem subgraphs and hoist common utilities into a separate cluster. |
-| **Collapse subsystem edges** | off | DOT overview mode: hide edges inside clusters and aggregate cross-cluster edges. Implies subsystem clustering. |
+
+### The call graph DOT dialog
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| **Caller Depth** | 2 | How many layers of callers to walk up. |
+| **Callee Depth** | 2 | How many layers of callees/references to walk down. |
+| **Cluster Resolution (%)** | 100 | DOT subsystem clustering granularity; higher values usually produce smaller groups. |
+| **Output File** | next to the input/IDB | Destination path. A directory is accepted; the default filename is appended. |
+| **Xref Types** | all on | Which edge kinds the graph walk follows. |
+| **Copy to clipboard** | off | Skip the file; push the DOT text to the clipboard. |
+| **Tree-shake stdlib/runtime functions** | off | Drop library, thunk, and common runtime functions during graph walks. |
+| **Orthogonal edge routing** | off | Emit `splines=ortho`. |
+| **Omit edge labels** | off | Keep edge colors/styles but omit ref-type labels. |
+| **Cluster by subsystem** | off | Group nodes into subsystem subgraphs and hoist common utilities into a separate cluster. |
+| **Collapse subsystem edges** | off | Overview mode: hide edges inside clusters and aggregate cross-cluster edges. Implies subsystem clustering. |
 | **Render only subsystem nodes** | off | Render one meta-node per subsystem and only aggregate inter-subsystem edges. Implies subsystem clustering. |
 
 ### The PTN notation

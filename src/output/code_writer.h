@@ -24,7 +24,8 @@ public:
         int max_chars = 0,
         const std::string &type_decls = "",
         bool omit_ptn = false,
-        FunctionOrder function_order = FunctionOrder::Address
+        FunctionOrder function_order = FunctionOrder::Address,
+        const std::set<ida::Address> *removed_functions = nullptr
     );
 
     bool write(
@@ -38,7 +39,8 @@ public:
         int max_chars = 0,
         const std::string &type_decls = "",
         bool omit_ptn = false,
-        FunctionOrder function_order = FunctionOrder::Address
+        FunctionOrder function_order = FunctionOrder::Address,
+        const std::set<ida::Address> *removed_functions = nullptr
     );
 
 private:
@@ -49,7 +51,8 @@ private:
         const std::map<ida::Address, FunctionSummary> &summaries,
         bool omit_ptn,
         const std::vector<ida::Address> &ordered_functions,
-        FunctionOrder function_order
+        FunctionOrder function_order,
+        const std::set<ida::Address> *removed_functions
     );
 
     std::string build_function_block(

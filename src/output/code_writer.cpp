@@ -3,6 +3,7 @@
 #include "analysis/function_ranker.h"
 
 #include <ida/database.hpp>
+#include <ida/function.hpp>
 
 #include <format>
 #include <fstream>
@@ -17,6 +18,19 @@ std::string hex_addr(ida::Address address) {
     return std::format("0x{:X}", address);
 }
 
+std::string function_name_from(
+    ida::Address ea,
+    const std::map<ida::Address, FunctionSummary> &summaries
+) {
+    auto it = summaries.find(ea);
+    if (it != summaries.end() && !it->second.func_name.empty())
+        return it->second.func_name;
+
+    ida::Result<std::string> name = ida::function::name_at(ea);
+    if (name && !name->empty()) return *name;
+    return "unknown";
+}
+
 } // namespace
 
 std::string CodeWriter::build_header(
@@ -26,7 +40,8 @@ std::string CodeWriter::build_header(
     const std::map<ida::Address, FunctionSummary> &summaries,
     bool omit_ptn,
     const std::vector<ida::Address> &ordered_functions,
-    FunctionOrder function_order
+    FunctionOrder function_order,
+    const std::set<ida::Address> *removed_functions
 ) {
     std::ostringstream ss;
 
@@ -52,14 +67,12 @@ std::string CodeWriter::build_header(
         ss << "// Start: all functions (no seed resolution)\n";
     } else if (start_functions.size() == 1) {
         ida::Address start_ea = *start_functions.begin();
-        auto it = summaries.find(start_ea);
-        std::string name = it != summaries.end() ? it->second.func_name : "unknown";
+        std::string name = function_name_from(start_ea, summaries);
         ss << "// Start Function: " << hex_addr(start_ea) << " (" << name << ")\n";
     } else {
         ss << "// Start Functions:\n";
         for (ida::Address ea : start_functions) {
-            auto it = summaries.find(ea);
-            std::string name = it != summaries.end() ? it->second.func_name : "unknown";
+            std::string name = function_name_from(ea, summaries);
             ss << "//   - " << hex_addr(ea) << " (" << name << ")\n";
         }
     }
@@ -77,7 +90,15 @@ std::string CodeWriter::build_header(
         ss << "//   - " << it->second.func_name << " (" << hex_addr(ea) << ")\n";
     }
 
-    ss << "// Removed Functions: None\n";
+    if (removed_functions && !removed_functions->empty()) {
+        ss << "// Removed Functions (" << removed_functions->size() << "):\n";
+        for (ida::Address ea : *removed_functions) {
+            ss << "//   - " << function_name_from(ea, summaries)
+               << " (" << hex_addr(ea) << ") [empty]\n";
+        }
+    } else {
+        ss << "// Removed Functions: None\n";
+    }
     ss << "// ------------------------------------------------------------\n\n";
 
     return ss.str();
@@ -233,7 +254,8 @@ std::string CodeWriter::render(
     int max_chars,
     const std::string &type_decls,
     bool omit_ptn,
-    FunctionOrder function_order
+    FunctionOrder function_order,
+    const std::set<ida::Address> *removed_functions
 ) {
     std::set<ida::Address> function_set;
     for (const auto &[ea, _] : summaries) {
@@ -245,7 +267,7 @@ std::string CodeWriter::render(
     // Build content
     std::string header = build_header(start_functions, caller_depth, callee_depth,
                                       summaries, omit_ptn, sorted_funcs,
-                                      function_order);
+                                      function_order, removed_functions);
     header += type_decls;
 
     std::vector<std::pair<ida::Address, std::string>> blocks;
@@ -315,11 +337,13 @@ bool CodeWriter::write(
     int max_chars,
     const std::string &type_decls,
     bool omit_ptn,
-    FunctionOrder function_order
+    FunctionOrder function_order,
+    const std::set<ida::Address> *removed_functions
 ) {
     std::string text = render(summaries, annotations, edges, start_functions,
                               caller_depth, callee_depth, max_chars,
-                              type_decls, omit_ptn, function_order);
+                              type_decls, omit_ptn, function_order,
+                              removed_functions);
     std::ofstream out(path);
     if (!out) return false;
     out << text;

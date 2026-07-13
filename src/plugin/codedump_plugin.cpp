@@ -15,6 +15,7 @@
 #include <ida/error.hpp>
 #include <ida/type.hpp>
 
+#include "common/function_filter.h"
 #include "common/types.h"
 #include "graph/graph_builder.h"
 #include "analysis/ctree_analyzer.h"
@@ -43,6 +44,7 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+#include <set>
 
 namespace codedump {
 
@@ -298,6 +300,17 @@ static void dump_functions_impl(std::span<const ida::Address> start_funcs,
         }
     }
 
+    std::vector<Edge> rendered_edges(edges.begin(), edges.end());
+    std::set<ida::Address> removed_empty_functions;
+    if (opts.prune_empty_functions
+        && (opts.output_code || opts.output_asm || opts.output_ptn)) {
+        removed_empty_functions = prune_empty_functions(summaries, rendered_edges);
+        if (!removed_empty_functions.empty()) {
+            log("[codedump] Pruned {} empty function(s)\n",
+                removed_empty_functions.size());
+        }
+    }
+
     replace_wait_box(
         "CodeDumper: pass 5/5 — generating output\n"
         "Step 1/3: building PTN annotations (%s)",
@@ -332,10 +345,10 @@ static void dump_functions_impl(std::span<const ida::Address> start_funcs,
             "Step 3/3: rendering code (%zu functions, %zu types)",
             summaries.size(), type_decls.size() ? size_t(1) : size_t(0));
         CodeWriter cw;
-        rendered = cw.render(summaries, annotations, edges, start_set,
+        rendered = cw.render(summaries, annotations, rendered_edges, start_set,
                              opts.caller_depth, opts.callee_depth, opts.max_chars,
                              type_decls, opts.omit_ptn,
-                             opts.function_order);
+                             opts.function_order, &removed_empty_functions);
         kind = "code";
         kind_count = summaries.size();
     }
@@ -367,7 +380,7 @@ static void dump_functions_impl(std::span<const ida::Address> start_funcs,
         AsmWriter aw;
         rendered = aw.render(summaries, annotations, ptn_emitter,
                              opts.callee_depth, type_decls, opts.omit_ptn,
-                             edges, start_set, opts.function_order);
+                             rendered_edges, start_set, opts.function_order);
         kind = "asm";
         kind_count = summaries.size();
     }
@@ -457,34 +470,85 @@ static std::string sanitize_for_filename(std::string_view name) {
     return std::regex_replace(std::string{name}, invalid_chars, "_");
 }
 
-// ── Code / DOT / PTN / ASM dump dialog ──────────────────────────────────
+static std::string_view extension_for_output_type(std::string_view output_type) {
+    if (output_type == "dot") return ".dot";
+    if (output_type == "ptn") return ".ptn";
+    if (output_type == "asm") return ".asm";
+    return ".c";
+}
 
-static void show_dump_dialog(std::string_view output_type) {
+struct DumpTarget {
+    ida::Address func_ea = ida::BadAddress;
+    std::string default_basename;
+    std::string default_path;
+};
+
+static std::optional<DumpTarget> current_dump_target(std::string_view output_type) {
     ida::Result<ida::Address> ea = ida::ui::screen_address();
     if (!ea) {
         warn_user("Code Dumper: No function at cursor");
-        return;
+        return std::nullopt;
     }
 
     ida::Result<ida::function::Function> function = ida::function::at(*ea);
     if (!function) {
         warn_user("Code Dumper: No function at cursor");
-        return;
+        return std::nullopt;
     }
 
     ida::Address func_ea = static_cast<ida::Address>(function->start());
     std::string func_name = function->name();
-
     std::string default_name = sanitize_for_filename(func_name);
-
-    std::string_view ext = ".c";
-    if (output_type == "dot")      ext = ".dot";
-    else if (output_type == "ptn") ext = ".ptn";
-    else if (output_type == "asm") ext = ".asm";
-
-    std::string default_basename = default_name + "_dump" + std::string{ext};
+    std::string default_basename =
+        default_name + "_dump" + std::string{extension_for_output_type(output_type)};
     std::string default_dir = default_dump_dir();
     std::string default_path = join_path(default_dir, default_basename);
+
+    return DumpTarget{func_ea, std::move(default_basename), std::move(default_path)};
+}
+
+static void normalize_output_path(std::string &chosen,
+                                  const std::string &default_path,
+                                  const std::string &default_basename) {
+    if (chosen.empty()) {
+        chosen = default_path;
+        return;
+    }
+
+    char last = chosen.back();
+    bool ends_with_sep = (last == '/' || last == '\\');
+    bool is_dir = !ends_with_sep && ida::path::is_directory(chosen);
+    if (ends_with_sep || is_dir)
+        chosen = join_path(chosen, default_basename);
+}
+
+static void apply_xref_checks(std::uint16_t xref_checks, DumpOptions &opts) {
+    opts.include_direct_calls   = (xref_checks & (1 << 0)) != 0;
+    opts.include_indirect_calls = (xref_checks & (1 << 1)) != 0;
+    opts.include_data_refs      = (xref_checks & (1 << 2)) != 0;
+    opts.include_immediate_refs = (xref_checks & (1 << 3)) != 0;
+    opts.include_tail_calls     = (xref_checks & (1 << 4)) != 0;
+    opts.include_virtual_calls  = (xref_checks & (1 << 5)) != 0;
+    opts.include_jump_tables    = (xref_checks & (1 << 6)) != 0;
+}
+
+static void apply_output_type(std::string_view output_type, DumpOptions &opts) {
+    opts.output_code = (output_type == "code");
+    opts.output_dot  = (output_type == "dot");
+    opts.output_ptn  = (output_type == "ptn");
+    opts.output_asm  = (output_type == "asm");
+}
+
+// ── Code / PTN / ASM dump dialog ────────────────────────────────────────
+
+static void show_dump_dialog(std::string_view output_type) {
+    if (output_type == "dot") {
+        warn_user("Code Dumper: internal error: DOT dialog routed to text form");
+        return;
+    }
+
+    std::optional<DumpTarget> target = current_dump_target(output_type);
+    if (!target) return;
 
     static const char form[] =
         "STARTITEM 0\n"
@@ -493,8 +557,6 @@ static void show_dump_dialog(std::string_view output_type) {
         "<#Depth of callers to traverse#Caller Depth:D:5:5::>\n"
         "<#Depth of callees/references to traverse#Callee Depth:D:5:5::>\n"
         "<#Maximum characters for output file (0=unlimited)#Max Characters:D:10:10::>\n"
-        "<#Subsystem clustering resolution/gamma for DOT output. "
-        "100 is the default; higher values usually produce smaller groups.#Cluster Resolution (%):D:5:5::>\n"
         "<#Output file path#Output File:f:1:64::>\n"
         "\n"
         "Xref Types\n"
@@ -507,30 +569,105 @@ static void show_dump_dialog(std::string_view output_type) {
         "<Jump Tables:C>>\n"
         "\n"
         "Options\n"
+        "<Remove empty functions and xrefs:C>\n"
         "<Omit PTN annotations:C>\n"
         "<Include size comments (sizeof / off / size):C>\n"
         "<Copy to clipboard (skip file write):C>\n"
         "<Include register summary (incoming/outgoing regs):C>\n"
         "<Trim types to referenced fields only (pad the rest):C>\n"
+        "<Tree-shake stdlib/runtime functions:C>\n"
         "<Sort functions by entry-ness:C>\n"
-        "<Sort functions by centrality:C>\n"
-        "<Cluster DOT by subsystem:C>\n"
+        "<Sort functions by centrality:C>>\n"
+        "\n";
+
+    sval_t caller_depth = 2;
+    sval_t callee_depth = 2;
+    sval_t max_chars = 0;
+    std::string chosen = target->default_path;
+    std::uint16_t xref_checks = 0x7F;
+    std::uint16_t options_check = 0x1;
+
+    if (!ask_form_or_warn(form,
+            ida::ui::form_sval(caller_depth),
+            ida::ui::form_sval(callee_depth),
+            ida::ui::form_sval(max_chars),
+            ida::ui::form_path(chosen),
+            ida::ui::form_bitset(xref_checks),
+            ida::ui::form_bitset(options_check))) {
+        return;
+    }
+
+    normalize_output_path(chosen, target->default_path, target->default_basename);
+
+    DumpOptions opts{};
+    opts.caller_depth          = static_cast<int>(caller_depth);
+    opts.callee_depth          = static_cast<int>(callee_depth);
+    opts.max_chars             = static_cast<int>(max_chars);
+    opts.output_path           = chosen;
+    opts.prune_empty_functions = (options_check & 1) != 0;
+    opts.omit_ptn              = (options_check & 2) != 0;
+    opts.size_comments         = (options_check & 4) != 0;
+    opts.copy_to_clipboard     = (options_check & 8) != 0;
+    opts.register_summary      = (options_check & 16) != 0;
+    opts.referenced_fields_only= (options_check & 32) != 0;
+    opts.tree_shake_stdlib_functions = (options_check & 64) != 0;
+    if ((options_check & 256) != 0)
+        opts.function_order = FunctionOrder::Centrality;
+    else if ((options_check & 128) != 0)
+        opts.function_order = FunctionOrder::Entryness;
+
+    apply_xref_checks(xref_checks, opts);
+    apply_output_type(output_type, opts);
+
+    std::vector<ida::Address> start_funcs{target->func_ea};
+    dump_functions_impl(start_funcs, opts);
+}
+
+// ── DOT dump dialog ─────────────────────────────────────────────────────
+
+static void show_dot_dump_dialog() {
+    std::optional<DumpTarget> target = current_dump_target("dot");
+    if (!target) return;
+
+    static const char form[] =
+        "STARTITEM 0\n"
+        "Call Graph DOT Options\n"
+        "\n"
+        "<#Depth of callers to traverse#Caller Depth:D:5:5::>\n"
+        "<#Depth of callees/references to traverse#Callee Depth:D:5:5::>\n"
+        "<#Subsystem clustering resolution/gamma. "
+        "100 is the default; higher values usually produce smaller groups.#Cluster Resolution (%):D:5:5::>\n"
+        "<#Output file path#Output File:f:1:64::>\n"
+        "\n"
+        "Xref Types\n"
+        "<Direct Calls:C>\n"
+        "<Indirect Calls:C>\n"
+        "<Data References:C>\n"
+        "<Immediate References:C>\n"
+        "<Tail Calls:C>\n"
+        "<Virtual Calls:C>\n"
+        "<Jump Tables:C>>\n"
+        "\n"
+        "DOT Options\n"
+        "<Copy to clipboard (skip file write):C>\n"
+        "<Tree-shake stdlib/runtime functions:C>\n"
+        "<Orthogonal edge routing:C>\n"
+        "<Omit edge labels:C>\n"
+        "<Cluster by subsystem:C>\n"
         "<Collapse subsystem edges:C>\n"
         "<Render only subsystem nodes:C>>\n"
         "\n";
 
     sval_t caller_depth = 2;
     sval_t callee_depth = 2;
-    sval_t max_chars = 0;
     sval_t cluster_resolution_pct = 100;
-    std::string chosen = default_path;
+    std::string chosen = target->default_path;
     std::uint16_t xref_checks = 0x7F;
     std::uint16_t options_check = 0;
 
     if (!ask_form_or_warn(form,
             ida::ui::form_sval(caller_depth),
             ida::ui::form_sval(callee_depth),
-            ida::ui::form_sval(max_chars),
             ida::ui::form_sval(cluster_resolution_pct),
             ida::ui::form_path(chosen),
             ida::ui::form_bitset(xref_checks),
@@ -538,54 +675,30 @@ static void show_dump_dialog(std::string_view output_type) {
         return;
     }
 
-    if (chosen.empty()) {
-        chosen = default_path;
-    } else {
-        char last = chosen.back();
-        bool ends_with_sep = (last == '/' || last == '\\');
-        bool is_dir = !ends_with_sep && ida::path::is_directory(chosen);
-        if (ends_with_sep || is_dir)
-            chosen = join_path(chosen, default_basename);
-    }
+    normalize_output_path(chosen, target->default_path, target->default_basename);
 
     DumpOptions opts{};
     opts.caller_depth          = static_cast<int>(caller_depth);
     opts.callee_depth          = static_cast<int>(callee_depth);
-    opts.max_chars             = static_cast<int>(max_chars);
+    opts.output_path           = chosen;
     int cluster_pct = static_cast<int>(cluster_resolution_pct);
     if (cluster_pct <= 0) cluster_pct = 100;
     opts.subsystem_cluster_resolution =
         static_cast<double>(cluster_pct) / 100.0;
-    opts.output_path           = chosen;
-    opts.omit_ptn              = (options_check & 1) != 0;
-    opts.size_comments         = (options_check & 2) != 0;
-    opts.copy_to_clipboard     = (options_check & 4) != 0;
-    opts.register_summary      = (options_check & 8) != 0;
-    opts.referenced_fields_only= (options_check & 16) != 0;
-    if ((options_check & 64) != 0)
-        opts.function_order = FunctionOrder::Centrality;
-    else if ((options_check & 32) != 0)
-        opts.function_order = FunctionOrder::Entryness;
-    opts.dot_cluster_subsystems = (options_check & 128) != 0;
-    opts.dot_collapse_subsystems = (options_check & 256) != 0;
-    opts.dot_cluster_only = (options_check & 512) != 0;
+    opts.copy_to_clipboard = (options_check & 1) != 0;
+    opts.tree_shake_stdlib_functions = (options_check & 2) != 0;
+    opts.dot_ortho = (options_check & 4) != 0;
+    opts.dot_omit_edge_labels = (options_check & 8) != 0;
+    opts.dot_cluster_subsystems = (options_check & 16) != 0;
+    opts.dot_collapse_subsystems = (options_check & 32) != 0;
+    opts.dot_cluster_only = (options_check & 64) != 0;
     if (opts.dot_collapse_subsystems || opts.dot_cluster_only)
         opts.dot_cluster_subsystems = true;
 
-    opts.include_direct_calls   = (xref_checks & (1 << 0)) != 0;
-    opts.include_indirect_calls = (xref_checks & (1 << 1)) != 0;
-    opts.include_data_refs      = (xref_checks & (1 << 2)) != 0;
-    opts.include_immediate_refs = (xref_checks & (1 << 3)) != 0;
-    opts.include_tail_calls     = (xref_checks & (1 << 4)) != 0;
-    opts.include_virtual_calls  = (xref_checks & (1 << 5)) != 0;
-    opts.include_jump_tables    = (xref_checks & (1 << 6)) != 0;
+    apply_xref_checks(xref_checks, opts);
+    apply_output_type("dot", opts);
 
-    opts.output_code = (output_type == "code");
-    opts.output_dot  = (output_type == "dot");
-    opts.output_ptn  = (output_type == "ptn");
-    opts.output_asm  = (output_type == "asm");
-
-    std::vector<ida::Address> start_funcs{func_ea};
+    std::vector<ida::Address> start_funcs{target->func_ea};
     dump_functions_impl(start_funcs, opts);
 }
 
@@ -1254,7 +1367,7 @@ static void register_actions() {
     action.label = "Dump call graph (.dot)...";
     action.tooltip = "Generate DOT call graph";
     action.handler_with_context = [](const ida::plugin::ActionContext &) {
-        show_dump_dialog("dot");
+        show_dot_dump_dialog();
         return ida::ok();
     };
     action.enabled_with_context = is_pseudocode_context;
