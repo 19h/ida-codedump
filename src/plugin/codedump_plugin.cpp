@@ -541,44 +541,120 @@ static void apply_output_type(std::string_view output_type, DumpOptions &opts) {
 
 // ── Code / PTN / ASM dump dialog ────────────────────────────────────────
 
+// Keep the reference and format-specific groups side by side.  The lowercase
+// checkbox group type is IDA's secondary-group syntax; it gives both groups
+// independent bitsets while avoiding a tall, nearly screen-sized form.
+static constexpr std::string_view kTextDumpFormFields =
+    "<#Depth of callers to traverse#Caller Depth:D:5:5::>\n"
+    "<#Depth of callees/references to traverse#Callee Depth:D:5:5::>\n"
+    "<#Maximum characters for output file (0=unlimited)#Max Characters:D:10:10::>\n"
+    "<#Output file path#Output File:f:1:40::>\n"
+    "\n"
+    "<##Reference types##Direct Calls:C>"
+    "<##Pseudocode options##Remove empty functions and xrefs:c>\n"
+    "<Indirect Calls:C><Omit PTN annotations:c>\n"
+    "<Data References:C><Include size comments (sizeof / off / size):c>\n"
+    "<Immediate References:C><Copy to clipboard (skip file write):c>\n"
+    "<Tail Calls:C><Include register summary (incoming/outgoing regs):c>\n"
+    "<Virtual Calls:C><Trim types to referenced fields only (pad the rest):c>\n"
+    "<Jump Tables:C>><Tree-shake stdlib/runtime functions:c>>\n"
+    "\n"
+    "<##Function order##Address:R><Entry-ness:R><Centrality:R>>\n"
+    "\n";
+
+static constexpr std::string_view kDotDumpForm =
+    "STARTITEM 0\n"
+    "Call Graph DOT Options\n"
+    "\n"
+    "<#Depth of callers to traverse#Caller Depth:D:5:5::>\n"
+    "<#Depth of callees/references to traverse#Callee Depth:D:5:5::>\n"
+    "<#Subsystem clustering resolution/gamma. "
+    "100 is the default; higher values usually produce smaller groups.#Cluster Resolution (%):D:5:5::>\n"
+    "<#Output file path#Output File:f:1:40::>\n"
+    "\n"
+    "<##Reference types##Direct Calls:C>"
+    "<##DOT options##Copy to clipboard (skip file write):c>\n"
+    "<Indirect Calls:C><Tree-shake stdlib/runtime functions:c>\n"
+    "<Data References:C><Orthogonal edge routing:c>\n"
+    "<Immediate References:C><Omit edge labels:c>\n"
+    "<Tail Calls:C><Cluster by subsystem:c>\n"
+    "<Virtual Calls:C><Collapse subsystem edges:c>\n"
+    "<Jump Tables:C>><Render only subsystem nodes:c>>\n"
+    "\n";
+
+template <std::size_t N>
+constexpr bool form_contains_all(
+        std::string_view form,
+        const std::array<std::string_view, N> &labels) {
+    return std::ranges::all_of(labels, [form](std::string_view label) {
+        return form.find(label) != std::string_view::npos;
+    });
+}
+
+template <std::size_t N>
+constexpr bool form_contains_any(
+        std::string_view form,
+        const std::array<std::string_view, N> &labels) {
+    return std::ranges::any_of(labels, [form](std::string_view label) {
+        return form.find(label) != std::string_view::npos;
+    });
+}
+
+static constexpr std::array<std::string_view, 9> kTextOnlyDialogLabels{
+    "Max Characters",
+    "Remove empty functions and xrefs",
+    "Omit PTN annotations",
+    "Include size comments",
+    "Include register summary",
+    "Trim types to referenced fields only",
+    "Function order",
+    "Entry-ness",
+    "Centrality",
+};
+
+static constexpr std::array<std::string_view, 6> kDotOnlyDialogLabels{
+    "Cluster Resolution (%)",
+    "Orthogonal edge routing",
+    "Omit edge labels",
+    "Cluster by subsystem",
+    "Collapse subsystem edges",
+    "Render only subsystem nodes",
+};
+
+static_assert(form_contains_all(kTextDumpFormFields, kTextOnlyDialogLabels));
+static_assert(!form_contains_any(kTextDumpFormFields, kDotOnlyDialogLabels));
+static_assert(form_contains_all(kDotDumpForm, kDotOnlyDialogLabels));
+static_assert(!form_contains_any(kDotDumpForm, kTextOnlyDialogLabels));
+
+static std::string_view text_dump_dialog_title(std::string_view output_type) {
+    if (output_type == "code") return "Pseudocode Dump Options";
+    if (output_type == "ptn") return "PTN Dump Options";
+    return "Assembly Dump Options";
+}
+
+static std::string text_dump_form(std::string_view output_type) {
+    std::string form{"STARTITEM 0\n"};
+    form.append(text_dump_dialog_title(output_type));
+    form.append("\n\n");
+    form.append(kTextDumpFormFields);
+    return form;
+}
+
 static void show_dump_dialog(std::string_view output_type) {
     if (output_type == "dot") {
         warn_user("Code Dumper: internal error: DOT dialog routed to text form");
+        return;
+    }
+    if (output_type != "code" && output_type != "ptn" && output_type != "asm") {
+        warn_user("Code Dumper: unsupported text dump type '%s'",
+                  std::string{output_type}.c_str());
         return;
     }
 
     std::optional<DumpTarget> target = current_dump_target(output_type);
     if (!target) return;
 
-    static const char form[] =
-        "STARTITEM 0\n"
-        "CodeDumper Options\n"
-        "\n"
-        "<#Depth of callers to traverse#Caller Depth:D:5:5::>\n"
-        "<#Depth of callees/references to traverse#Callee Depth:D:5:5::>\n"
-        "<#Maximum characters for output file (0=unlimited)#Max Characters:D:10:10::>\n"
-        "<#Output file path#Output File:f:1:64::>\n"
-        "\n"
-        "Xref Types\n"
-        "<Direct Calls:C>\n"
-        "<Indirect Calls:C>\n"
-        "<Data References:C>\n"
-        "<Immediate References:C>\n"
-        "<Tail Calls:C>\n"
-        "<Virtual Calls:C>\n"
-        "<Jump Tables:C>>\n"
-        "\n"
-        "Options\n"
-        "<Remove empty functions and xrefs:C>\n"
-        "<Omit PTN annotations:C>\n"
-        "<Include size comments (sizeof / off / size):C>\n"
-        "<Copy to clipboard (skip file write):C>\n"
-        "<Include register summary (incoming/outgoing regs):C>\n"
-        "<Trim types to referenced fields only (pad the rest):C>\n"
-        "<Tree-shake stdlib/runtime functions:C>\n"
-        "<Sort functions by entry-ness:C>\n"
-        "<Sort functions by centrality:C>>\n"
-        "\n";
+    std::string form = text_dump_form(output_type);
 
     sval_t caller_depth = 2;
     sval_t callee_depth = 2;
@@ -586,6 +662,7 @@ static void show_dump_dialog(std::string_view output_type) {
     std::string chosen = target->default_path;
     std::uint16_t xref_checks = 0x7F;
     std::uint16_t options_check = 0x1;
+    std::uint16_t function_order_radio = 0;
 
     if (!ask_form_or_warn(form,
             ida::ui::form_sval(caller_depth),
@@ -593,7 +670,8 @@ static void show_dump_dialog(std::string_view output_type) {
             ida::ui::form_sval(max_chars),
             ida::ui::form_path(chosen),
             ida::ui::form_bitset(xref_checks),
-            ida::ui::form_bitset(options_check))) {
+            ida::ui::form_bitset(options_check),
+            ida::ui::form_radio(function_order_radio))) {
         return;
     }
 
@@ -611,9 +689,9 @@ static void show_dump_dialog(std::string_view output_type) {
     opts.register_summary      = (options_check & 16) != 0;
     opts.referenced_fields_only= (options_check & 32) != 0;
     opts.tree_shake_stdlib_functions = (options_check & 64) != 0;
-    if ((options_check & 256) != 0)
+    if (function_order_radio == 2)
         opts.function_order = FunctionOrder::Centrality;
-    else if ((options_check & 128) != 0)
+    else if (function_order_radio == 1)
         opts.function_order = FunctionOrder::Entryness;
 
     apply_xref_checks(xref_checks, opts);
@@ -629,35 +707,6 @@ static void show_dot_dump_dialog() {
     std::optional<DumpTarget> target = current_dump_target("dot");
     if (!target) return;
 
-    static const char form[] =
-        "STARTITEM 0\n"
-        "Call Graph DOT Options\n"
-        "\n"
-        "<#Depth of callers to traverse#Caller Depth:D:5:5::>\n"
-        "<#Depth of callees/references to traverse#Callee Depth:D:5:5::>\n"
-        "<#Subsystem clustering resolution/gamma. "
-        "100 is the default; higher values usually produce smaller groups.#Cluster Resolution (%):D:5:5::>\n"
-        "<#Output file path#Output File:f:1:64::>\n"
-        "\n"
-        "Xref Types\n"
-        "<Direct Calls:C>\n"
-        "<Indirect Calls:C>\n"
-        "<Data References:C>\n"
-        "<Immediate References:C>\n"
-        "<Tail Calls:C>\n"
-        "<Virtual Calls:C>\n"
-        "<Jump Tables:C>>\n"
-        "\n"
-        "DOT Options\n"
-        "<Copy to clipboard (skip file write):C>\n"
-        "<Tree-shake stdlib/runtime functions:C>\n"
-        "<Orthogonal edge routing:C>\n"
-        "<Omit edge labels:C>\n"
-        "<Cluster by subsystem:C>\n"
-        "<Collapse subsystem edges:C>\n"
-        "<Render only subsystem nodes:C>>\n"
-        "\n";
-
     sval_t caller_depth = 2;
     sval_t callee_depth = 2;
     sval_t cluster_resolution_pct = 100;
@@ -665,7 +714,7 @@ static void show_dot_dump_dialog() {
     std::uint16_t xref_checks = 0x7F;
     std::uint16_t options_check = 0;
 
-    if (!ask_form_or_warn(form,
+    if (!ask_form_or_warn(kDotDumpForm,
             ida::ui::form_sval(caller_depth),
             ida::ui::form_sval(callee_depth),
             ida::ui::form_sval(cluster_resolution_pct),

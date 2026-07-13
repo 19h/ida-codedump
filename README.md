@@ -419,8 +419,7 @@ Every output that can go to the clipboard falls back to a select-all text dialog
 | **Include register summary** | off | Add per-function incoming/outgoing register lines. |
 | **Trim types to referenced fields only** | off | Reduce structs/unions to accessed members, padding the rest. |
 | **Tree-shake stdlib/runtime functions** | off | Drop library, thunk, and common runtime functions during graph walks. |
-| **Sort functions by entry-ness** | off | Put likely entries, exports, callbacks, and call-graph gateways before leaf utilities. |
-| **Sort functions by centrality** | off | Put functions that rank highly across call-graph importance metrics before peripheral routines. |
+| **Function order** | Address | Select address order, entry-ness (entries, exports, callbacks, and gateways first), or centrality (graph-important functions first). |
 
 ### The call graph DOT dialog
 
