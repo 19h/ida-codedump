@@ -36,6 +36,33 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(idax)
 
+# idax calls init_hexrays_plugin() and reads cexpr_t::m. Teach that library the
+# 9.4/9.5 handshake in src/common. A fresh fetch of today's idax master does not
+# have the probe yet; patches/idax-hexrays-abi.patch adds it. Once idax itself
+# carries src/detail/hexrays_probe.hpp, the patch is skipped.
+set(_idax_probe "${idax_SOURCE_DIR}/src/detail/hexrays_probe.hpp")
+if(NOT EXISTS "${_idax_probe}")
+    execute_process(
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/idax-hexrays-abi.patch"
+        WORKING_DIRECTORY "${idax_SOURCE_DIR}"
+        RESULT_VARIABLE _idax_patch_result
+        ERROR_VARIABLE _idax_patch_error
+    )
+    if(NOT _idax_patch_result EQUAL 0)
+        message(FATAL_ERROR
+            "idax has no Hex-Rays 9.4/9.5 probe, and patches/idax-hexrays-abi.patch "
+            "did not apply. That patch matches the idax snapshot codedump fetched "
+            "(the tree that still calls init_hexrays_plugin() directly).\n"
+            "${_idax_patch_error}")
+    endif()
+endif()
+if(NOT EXISTS "${_idax_probe}")
+    message(FATAL_ERROR
+        "idax is missing src/detail/hexrays_probe.hpp after the ABI patch")
+endif()
+target_compile_definitions(idax PRIVATE CODEDUMP_HEXRAYS_ABI)
+target_include_directories(idax PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
 # ── codedump plugin ─────────────────────────────────────────────────────
 if(NOT COMMAND ida_add_plugin)
     message(FATAL_ERROR
@@ -237,3 +264,13 @@ if(CODEDUMP_BUILD_CLI)
         target_compile_options(cdump PRIVATE -Wall -Wextra -Wno-unused-parameter)
     endif()
 endif()
+
+# Host-side checks for the 9.4/9.5 decompiler decisions. No IDA runtime.
+enable_testing()
+add_executable(codedump_hexrays_abi_test tests/hexrays_abi_test.cpp)
+target_include_directories(codedump_hexrays_abi_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_compile_features(codedump_hexrays_abi_test PRIVATE cxx_std_23)
+if(NOT MSVC)
+    target_compile_options(codedump_hexrays_abi_test PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME codedump.hexrays_abi COMMAND codedump_hexrays_abi_test)

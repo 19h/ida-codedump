@@ -46,6 +46,10 @@
 #include <vector>
 #include <set>
 
+// After the standard headers. hexrays.hpp poisons fread/fwrite, and <fstream>
+// above has to see the real names.
+#include "common/hexrays_handshake.hpp"
+
 namespace codedump {
 
 namespace {
@@ -1557,14 +1561,66 @@ public:
     }
 
     bool init() override {
+        // A PLUGIN_MULTI instance can be created while Hex-Rays is still
+        // constructing its per-database plugmod. Keep this instance alive and
+        // retry only at bounded lifecycle events instead of unloading it after
+        // a transient init_hexrays_plugin() failure.
+        ida::Result<ida::ui::Token> ready_subscription =
+            ida::ui::on_ready_to_run([this]() {
+                (void)initialize_decompiler();
+            });
+        if (ready_subscription)
+            ready_subscription_.emplace(*ready_subscription);
+        else
+            log("[codedump] Failed to subscribe to ready-to-run: {}\n",
+                ready_subscription.error().message);
+
+        ida::Result<ida::ui::Token> database_subscription =
+            ida::ui::on_database_inited([this](bool, std::string) {
+                (void)initialize_decompiler();
+            });
+        if (database_subscription)
+            database_subscription_.emplace(*database_subscription);
+        else
+            log("[codedump] Failed to subscribe to database-inited: {}\n",
+                database_subscription.error().message);
+
+        if (!initialize_decompiler())
+            ida::ui::message("[codedump] Waiting for Hex-Rays decompiler...\n");
+        return true;
+    }
+
+    void term() override {
+        database_subscription_.reset();
+        ready_subscription_.reset();
+
+        if (hexrays_session_) {
+            ui_subscription_.reset();
+            popup_subscription_.reset();
+            unregister_actions();
+            hexrays_session_.reset();
+        }
+        ida::ui::message("[codedump] Plugin terminated\n");
+    }
+
+    ida::Status run(std::size_t) override {
+        if (!initialize_decompiler()) {
+            warn_user("CodeDumper: Hex-Rays is not available for the current database.");
+            return ida::ok();
+        }
+        show_dump_dialog("code");
+        return ida::ok();
+    }
+
+private:
+    bool initialize_decompiler() {
+        if (hexrays_session_)
+            return true;
+
         ida::Result<ida::decompiler::ScopedSession> session =
             ida::decompiler::initialize();
-        if (!session) {
-            ida::ui::message(std::format(
-                "[codedump] Hex-Rays decompiler not available: {}\n",
-                session.error().message));
+        if (!session)
             return false;
-        }
         hexrays_session_.emplace(std::move(*session));
 
         register_actions();
@@ -1592,30 +1648,17 @@ public:
         }
         ui_subscription_.emplace(*ui_subscription);
 
-        ida::ui::message("[codedump] Plugin initialized "
-                         "(right-click in pseudocode or Local Types view)\n");
+        log("[codedump] Plugin initialized (Hex-Rays {}; "
+            "right-click in pseudocode or Local Types view)\n",
+            codedump::hexrays_abi::layout_name(codedump::hexrays::layout()));
         return true;
     }
 
-    void term() override {
-        if (hexrays_session_) {
-            ui_subscription_.reset();
-            popup_subscription_.reset();
-            unregister_actions();
-            hexrays_session_.reset();
-        }
-        ida::ui::message("[codedump] Plugin terminated\n");
-    }
-
-    ida::Status run(std::size_t) override {
-        show_dump_dialog("code");
-        return ida::ok();
-    }
-
-private:
     std::optional<ida::decompiler::ScopedSession> hexrays_session_;
     std::optional<ida::decompiler::ScopedSubscription> popup_subscription_;
     std::optional<ida::ui::ScopedSubscription> ui_subscription_;
+    std::optional<ida::ui::ScopedSubscription> ready_subscription_;
+    std::optional<ida::ui::ScopedSubscription> database_subscription_;
 };
 
 } // namespace codedump

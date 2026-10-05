@@ -54,6 +54,8 @@
 #include <string_view>
 #include <vector>
 
+#include "common/hexrays_handshake.hpp"
+
 namespace {
 
 struct Cli {
@@ -494,6 +496,10 @@ int main(int argc, char** argv) {
         std::cerr << "Hex-Rays decompiler not available (required for dumps)\n";
         (void)ida::database::close(false);
         return 1;
+    }
+    if (!cli.quiet) {
+        progress("[cdump] Hex-Rays layout %s\n",
+                 codedump::hexrays_abi::layout_name(codedump::hexrays::layout()));
     }
 
     // resolve -f specs now that DB is open
