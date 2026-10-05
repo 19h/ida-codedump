@@ -1,5 +1,5 @@
 diff --git a/src/decompiler.cpp b/src/decompiler.cpp
-index a7c2e9f..4876f7b 100644
+index cf5f537..28faa7e 100644
 --- a/src/decompiler.cpp
 +++ b/src/decompiler.cpp
 @@ -2,8 +2,9 @@
@@ -22,7 +22,7 @@ index a7c2e9f..4876f7b 100644
  
  // intel.hpp provides EVEX/opmask constants for the MicrocodeContext
  // opmask introspection APIs. This is an implementation-only dependency.
-@@ -2158,7 +2160,7 @@ Status ScopedSession::close() {
+@@ -2669,7 +2671,7 @@ Status ScopedSession::close() {
  
  Result<ScopedSession> initialize() {
      std::lock_guard<std::mutex> lock(g_hexrays_lifecycle_mutex);
@@ -31,7 +31,7 @@ index a7c2e9f..4876f7b 100644
          return std::unexpected(Error::unsupported(
              "Decompiler not available (Hex-Rays plugin not loaded)"));
      }
-@@ -2170,7 +2172,7 @@ Result<bool> available() {
+@@ -2681,7 +2683,7 @@ Result<bool> available() {
      std::lock_guard<std::mutex> lock(g_hexrays_lifecycle_mutex);
      if (hexrays_ready_locked())
          return true;
@@ -40,7 +40,7 @@ index a7c2e9f..4876f7b 100644
          s_hexrays_initialized = true;
          return true;
      }
-@@ -3422,7 +3424,7 @@ static Status ensure_hexrays() {
+@@ -3951,7 +3953,7 @@ static Status ensure_hexrays() {
      std::lock_guard<std::mutex> lock(g_hexrays_lifecycle_mutex);
      if (hexrays_ready_locked())
          return ida::ok();
@@ -49,7 +49,7 @@ index a7c2e9f..4876f7b 100644
          s_hexrays_initialized = true;
          return ida::ok();
      }
-@@ -3607,7 +3609,7 @@ Result<std::uint32_t> ExpressionView::member_offset() const {
+@@ -4149,7 +4151,7 @@ Result<std::uint32_t> ExpressionView::member_offset() const {
      auto* e = static_cast<cexpr_t*>(raw_);
      if (e->op != cot_memref && e->op != cot_memptr)
          return std::unexpected(Error::validation("Expression is not a member access"));
@@ -58,7 +58,7 @@ index a7c2e9f..4876f7b 100644
  }
  
  Result<std::string> ExpressionView::member_name() const {
-@@ -3628,7 +3630,7 @@ Result<std::string> ExpressionView::member_name() const {
+@@ -4170,7 +4172,7 @@ Result<std::string> ExpressionView::member_name() const {
      if (!base_type.get_udt_details(&udt))
          return std::unexpected(Error::sdk("get_udt_details failed"));
  
@@ -67,7 +67,7 @@ index a7c2e9f..4876f7b 100644
      for (std::size_t i = 0; i < udt.size(); ++i) {
          const udm_t& member = udt[i];
          const int member_offset = static_cast<int>(member.offset / 8);
-@@ -4115,8 +4117,9 @@ public:
+@@ -4837,8 +4839,9 @@ public:
                  tinfo_t parent_type = parent->type;
                  if (expression->op == cot_memptr && parent_type.is_ptr())
                      parent_type = parent_type.get_pointed_object();
@@ -121,7 +121,7 @@ index 0000000..0efce5b
 +
 +} // namespace ida::detail
 diff --git a/src/plugin.cpp b/src/plugin.cpp
-index 143ed1d..f384e13 100644
+index 52257ed..727ade8 100644
 --- a/src/plugin.cpp
 +++ b/src/plugin.cpp
 @@ -8,6 +8,7 @@
@@ -130,9 +130,9 @@ index 143ed1d..f384e13 100644
  #include <hexrays.hpp>
 +#include "detail/hexrays_probe.hpp"
  
- extern plugin_t PLUGIN;
- 
-@@ -91,7 +92,7 @@ struct ActionAdapter : public action_handler_t {
+ #include <atomic>
+ #include <map>
+@@ -211,7 +212,7 @@ struct ActionAdapter : public action_handler_t {
  
          if (ctx->widget != nullptr
              && ctx->widget_type == BWN_PSEUDOCODE
