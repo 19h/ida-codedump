@@ -421,7 +421,9 @@ static ida::Address resolve_spec(const std::string& spec) {
     }
     if (hex || std::all_of(s.begin(), s.end(), [](unsigned char c){ return std::isxdigit(c); })) {
         char* end = nullptr;
-        unsigned long long v = std::strtoull(s.c_str(), &end, 16);
+        // pro.h #defines strtoull to _strtoui64 on MSVC, so std::strtoull
+        // becomes std::_strtoui64 and does not compile.
+        unsigned long long v = strtoull(s.c_str(), &end, 16);
         if (end && *end == '\0') return static_cast<ida::Address>(v);
     }
     // name
