@@ -34,7 +34,37 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/19h/idax.git
     GIT_TAG        master
 )
-FetchContent_MakeAvailable(idax)
+
+# Populate first so the patches land before idax's own CMake runs.
+# CMP0169 stays OLD: this file's minimum is 3.27, and Populate is how the
+# patch is applied to a tree that is not yet a subdirectory.
+if(POLICY CMP0169)
+    cmake_policy(SET CMP0169 OLD)
+endif()
+FetchContent_GetProperties(idax)
+if(NOT idax_POPULATED)
+    FetchContent_Populate(idax)
+endif()
+
+# Current ida-sdk main has no ida-cmake submodule. The in-tree package is
+# src/cmake/idasdkConfig.cmake. patches/idax-cmake-bootstrap.patch teaches
+# today's idax master to accept that. Skip once the fetched CMakeLists
+# already mentions it.
+file(READ "${idax_SOURCE_DIR}/CMakeLists.txt" _idax_cmake_text)
+if(NOT _idax_cmake_text MATCHES "idasdkConfig\\.cmake")
+    execute_process(
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/idax-cmake-bootstrap.patch"
+        WORKING_DIRECTORY "${idax_SOURCE_DIR}"
+        RESULT_VARIABLE _idax_cmake_patch_result
+        ERROR_VARIABLE _idax_cmake_patch_error
+    )
+    if(NOT _idax_cmake_patch_result EQUAL 0)
+        message(FATAL_ERROR
+            "idax cannot see the in-tree IDA SDK package, and "
+            "patches/idax-cmake-bootstrap.patch did not apply.\n"
+            "${_idax_cmake_patch_error}")
+    endif()
+endif()
 
 # idax calls init_hexrays_plugin() and reads cexpr_t::m. Teach that library the
 # 9.4/9.5 handshake in src/common. A fresh fetch of today's idax master does not
@@ -60,6 +90,10 @@ if(NOT EXISTS "${_idax_probe}")
     message(FATAL_ERROR
         "idax is missing src/detail/hexrays_probe.hpp after the ABI patch")
 endif()
+
+# MakeAvailable skips add_subdirectory once Populate has already run.
+add_subdirectory("${idax_SOURCE_DIR}" "${idax_BINARY_DIR}")
+
 target_compile_definitions(idax PRIVATE CODEDUMP_HEXRAYS_ABI)
 target_include_directories(idax PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
