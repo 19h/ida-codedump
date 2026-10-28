@@ -180,6 +180,7 @@ std::string CodeWriter::build_function_block(
     ida::Address func_ea,
     const FunctionSummary &summary,
     const std::string &annots,
+    const std::string &data_record,
     const std::vector<Edge> &edges,
     const std::map<ida::Address, FunctionSummary> &all_summaries,
     bool omit_ptn
@@ -199,6 +200,16 @@ std::string CodeWriter::build_function_block(
     // PTN annotations
     if (!omit_ptn && !annots.empty()) {
         ss << annots;
+    }
+
+    // PTN data-ref records (from the referenced-data collector). Emitted as
+    //-is; the collector already formatted the lines without a comment prefix.
+    if (!data_record.empty()) {
+        std::istringstream lines(data_record);
+        std::string line;
+        while (std::getline(lines, line)) {
+            if (!line.empty()) ss << "// " << line << "\n";
+        }
     }
 
     // Function header
@@ -253,9 +264,11 @@ std::string CodeWriter::render(
     int callee_depth,
     int max_chars,
     const std::string &type_decls,
+    const std::string &referenced_data,
     bool omit_ptn,
     FunctionOrder function_order,
-    const std::set<ida::Address> *removed_functions
+    const std::set<ida::Address> *removed_functions,
+    const std::map<ida::Address, std::string> &data_records
 ) {
     std::set<ida::Address> function_set;
     for (const auto &[ea, _] : summaries) {
@@ -269,6 +282,7 @@ std::string CodeWriter::render(
                                       summaries, omit_ptn, sorted_funcs,
                                       function_order, removed_functions);
     header += type_decls;
+    if (!referenced_data.empty()) header += referenced_data;
 
     std::vector<std::pair<ida::Address, std::string>> blocks;
     for (ida::Address ea : sorted_funcs) {
@@ -278,7 +292,13 @@ std::string CodeWriter::render(
         if (it != annotations.end()) {
             annots = it->second;
         }
-        std::string block = build_function_block(ea, summary, annots, edges, summaries, omit_ptn);
+        std::string data_record;
+        auto dr = data_records.find(ea);
+        if (dr != data_records.end()) {
+            data_record = dr->second;
+        }
+        std::string block = build_function_block(ea, summary, annots, data_record,
+                                                 edges, summaries, omit_ptn);
         blocks.emplace_back(ea, block);
     }
 
@@ -336,14 +356,16 @@ bool CodeWriter::write(
     int callee_depth,
     int max_chars,
     const std::string &type_decls,
+    const std::string &referenced_data,
     bool omit_ptn,
     FunctionOrder function_order,
-    const std::set<ida::Address> *removed_functions
+    const std::set<ida::Address> *removed_functions,
+    const std::map<ida::Address, std::string> &data_records
 ) {
     std::string text = render(summaries, annotations, edges, start_functions,
                               caller_depth, callee_depth, max_chars,
-                              type_decls, omit_ptn, function_order,
-                              removed_functions);
+                              type_decls, referenced_data, omit_ptn, function_order,
+                              removed_functions, data_records);
     std::ofstream out(path);
     if (!out) return false;
     out << text;

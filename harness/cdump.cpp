@@ -27,6 +27,7 @@
 #include "common/function_filter.h"
 #include "graph/graph_builder.h"
 #include "analysis/ctree_analyzer.h"
+#include "analysis/data_ref_collector.h"
 #include "analysis/ptn_emitter.h"
 #include "analysis/register_analyzer.h"
 #include "analysis/type_collector.h"
@@ -78,6 +79,8 @@ struct Cli {
     bool register_summary = false;
     bool referenced_fields_only = false;
     bool prune_empty_functions = true;
+    bool include_referenced_data = false;
+    int referenced_data_max_bytes = 64;
 
     bool include_direct_calls = true;
     bool include_indirect_calls = true;
@@ -135,6 +138,18 @@ Options:
   --prune-empty-functions  Drop empty decompiler stubs and xrefs to them (default).
   --keep-empty-functions, --no-prune-empty-functions
                            Keep empty decompiler stubs in text dumps.
+
+  --referenced-data        Emit a REF-DATA block (code/asm dumps): a one-line
+                           catalog of every data item referenced by the dumped
+                           code (strings quoted, pointer targets resolved,
+                           zero memory called out in one token), plus PTN
+                           records "D: F(func) -> D(item) [uses]" inside each
+                           function block, where uses encode the ref kind
+                           (r/w/off/str/info).
+  --no-referenced-data     Disable referenced data (default).
+  --referenced-data-limit <n>
+                           Max payload bytes rendered per referenced data item
+                           (default 64).
 
   --no-direct-calls, --no-indirect-calls, --no-data-refs,
   --no-immediate-refs, --no-tail-calls, --no-virtual-calls, --no-jump-tables
@@ -285,6 +300,16 @@ static bool parse_cli(int argc, char** argv, Cli& cli) {
         } else if (a == "--keep-empty-functions" || a == "--no-prune-empty-functions" ||
                    a == "--no-drop-empty-functions") {
             cli.prune_empty_functions = false;
+        } else if (a == "--referenced-data" || a == "--data-refs-in-dump") {
+            cli.include_referenced_data = true;
+        } else if (a == "--no-referenced-data" || a == "--no-data-refs-in-dump") {
+            cli.include_referenced_data = false;
+        } else if (a == "--referenced-data-limit" || a == "--data-limit") {
+            const char* v = next();
+            if (!v || !parse_int(v, cli.referenced_data_max_bytes)) {
+                std::cerr << "Error: " << a << " needs int\n";
+                return false;
+            }
         } else if (a == "--no-direct-calls") {
             cli.include_direct_calls = false;
         } else if (a == "--direct-calls") {
@@ -582,6 +607,8 @@ int main(int argc, char** argv) {
     opts.dot_cluster_only = cli.dot_cluster_only;
     opts.subsystem_cluster_resolution = cli.subsystem_cluster_resolution;
     opts.tree_shake_stdlib_functions = cli.tree_shake_stdlib_functions;
+    opts.include_referenced_data = cli.include_referenced_data;
+    opts.referenced_data_max_bytes = cli.referenced_data_max_bytes;
     opts.function_order = cli.function_order;
     opts.output_code = (cli.format == "code");
     opts.output_asm = (cli.format == "asm");
@@ -664,6 +691,18 @@ int main(int argc, char** argv) {
 
     if (!cli.quiet) progress("[cdump] %zu functions\n", func_set.size());
 
+    // referenced-data collection: walk each dumped function's data xrefs so
+    // the dump can carry the bytes behind the addresses (strings, constants,
+    // zeroed memory callouts). Only needed for text formats.
+    bool needs_data = cli.include_referenced_data &&
+                      (cli.format == "code" || cli.format == "asm");
+    codedump::DataRefCollector data_collector;
+    if (needs_data) {
+        if (!cli.quiet) progress("[cdump] collecting referenced data\n");
+        for (auto ea : func_set)
+            data_collector.collect_from_function(ea);
+    }
+
     // provenance (ctree) for anything needing summaries
     bool needs_prov = (cli.format == "code" || cli.format == "asm" || cli.format == "ptn");
     std::map<ida::Address, codedump::FunctionSummary> summaries;
@@ -744,6 +783,16 @@ int main(int argc, char** argv) {
         type_decls = type_collector.emit(opts.size_comments, opts.referenced_fields_only);
     }
 
+    std::string referenced_data;
+    std::map<ida::Address, std::string> data_records;
+    if (needs_data && !data_collector.empty()) {
+        if (!cli.quiet) progress("[cdump] rendering %zu referenced data item(s)\n",
+                                 data_collector.size());
+        referenced_data = data_collector.emit(
+            static_cast<std::size_t>(opts.referenced_data_max_bytes), summaries);
+        data_records = data_collector.per_function_records(summaries);
+    }
+
     // start set for headers (empty => "all" handled in writers)
     std::set<ida::Address> start_set;
     for (auto e : requested) start_set.insert(e);
@@ -756,8 +805,8 @@ int main(int argc, char** argv) {
         codedump::CodeWriter cw;
         rendered = cw.render(summaries, annotations, edges, start_set,
                              h_call, h_callee, cli.max_chars, type_decls,
-                             opts.omit_ptn, opts.function_order,
-                             &removed_empty_functions);
+                             referenced_data, opts.omit_ptn, opts.function_order,
+                             &removed_empty_functions, data_records);
     } else if (cli.format == "dot") {
         codedump::DotWriter dw;
         rendered = dw.render(func_set, edges, start_set, opts);
@@ -767,8 +816,8 @@ int main(int argc, char** argv) {
     } else if (cli.format == "asm") {
         codedump::AsmWriter aw;
         rendered = aw.render(summaries, annotations, ptn_emitter,
-                             h_callee, type_decls, opts.omit_ptn,
-                             edges, start_set, opts.function_order);
+                             h_callee, type_decls, referenced_data, opts.omit_ptn,
+                             edges, start_set, opts.function_order, data_records);
     }
 
     if (rendered.empty()) {

@@ -224,6 +224,16 @@ cdump [options] <input.idb|binary>
   --prune-empty-functions   Drop empty decompiler stubs and xrefs to them in
                             text dumps. Default: on.
   --keep-empty-functions    Keep empty decompiler stubs.
+  --referenced-data         Emit a REF-DATA block in code/asm dumps: a one-line
+                            catalog of every data item referenced by the dumped
+                            code (strings quoted, pointer targets resolved,
+                            zero memory as a one-token callout), plus PTN
+                            records "D: F(func) -> D(item) [uses]" inside each
+                            function block; uses encode the ref kind
+                            (r=read w=write off=address-of/offset str=string).
+                            Default: off.
+  --referenced-data-limit N Max payload bytes rendered per referenced data item.
+                            Default: 64.
   --no-direct-calls ...     Disable graph-walk xref kinds; one flag per xref kind.
   --rankdir TB|LR|RL|BT     DOT graph direction. Default: TB.
   --ortho                   Emit splines=ortho for DOT output.
@@ -262,6 +272,7 @@ cdump --format dot --collapse-subsystems --cluster-resolution 1.2 mybin.i64
 cdump --format dot --cluster-only --cluster-resolution 1.2 mybin.i64
 cdump --format code --function-order entryness mybin.i64
 cdump --format code --function-order centrality mybin.i64
+cdump -f main --referenced-data --referenced-data-limit 32 mybin.i64   # include the data the code touches
 ```
 
 Key properties:

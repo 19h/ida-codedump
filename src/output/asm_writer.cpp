@@ -12,16 +12,40 @@
 
 namespace codedump {
 
+namespace {
+
+// Emit a pre-rendered block of "//"-prefixed lines as asm "; " comments so
+// type declarations and the referenced-data block share one conversion path.
+void append_comment_block(std::ostream &out, const std::string &block) {
+    if (block.empty()) return;
+    std::istringstream lines(block);
+    std::string line;
+    while (std::getline(lines, line)) {
+        // Strip the leading "// " that the C dumper uses so the asm
+        // comment style stays consistent.
+        if (line.rfind("// ", 0) == 0)
+            out << "; " << line.substr(3) << "\n";
+        else if (line.rfind("//", 0) == 0)
+            out << ";" << line.substr(2) << "\n";
+        else
+            out << "; " << line << "\n";
+    }
+}
+
+} // namespace
+
 std::string AsmWriter::render(
     const std::map<ida::Address, FunctionSummary> &summaries,
     const std::map<ida::Address, std::string> &annotations,
     PTNEmitter &emitter,
     int callee_depth,
     const std::string &type_decls,
+    const std::string &referenced_data,
     bool omit_ptn,
     const std::vector<Edge> &edges,
     const std::set<ida::Address> &start_functions,
-    FunctionOrder function_order
+    FunctionOrder function_order,
+    const std::map<ida::Address, std::string> &data_records
 ) {
     std::set<ida::Address> function_set;
     for (const auto &[ea, _] : summaries) {
@@ -44,18 +68,11 @@ std::string AsmWriter::render(
     // Prepend recursively-resolved type declarations as comments so the
     // single .asm file is self-contained.
     if (!type_decls.empty()) {
-        std::istringstream tds(type_decls);
-        std::string line;
-        while (std::getline(tds, line)) {
-            // Strip the leading "// " that the C dumper uses so the asm
-            // comment style stays consistent.
-            if (line.rfind("// ", 0) == 0)
-                out << "; " << line.substr(3) << "\n";
-            else if (line.rfind("//", 0) == 0)
-                out << ";" << line.substr(2) << "\n";
-            else
-                out << "; " << line << "\n";
-        }
+        append_comment_block(out, type_decls);
+        out << "\n";
+    }
+    if (!referenced_data.empty()) {
+        append_comment_block(out, referenced_data);
         out << "\n";
     }
 
@@ -91,6 +108,15 @@ std::string AsmWriter::render(
                 if (!line.empty()) {
                     out << "; " << line << "\n";
                 }
+            }
+        }
+        // PTN data-ref records (referenced-data collector), also unprefixed.
+        auto dr = data_records.find(ea);
+        if (dr != data_records.end()) {
+            std::istringstream drs(dr->second);
+            std::string line;
+            while (std::getline(drs, line)) {
+                if (!line.empty()) out << "; " << line << "\n";
             }
         }
         out << "; ========================================\n";
@@ -148,14 +174,16 @@ bool AsmWriter::write(
     PTNEmitter &emitter,
     int callee_depth,
     const std::string &type_decls,
+    const std::string &referenced_data,
     bool omit_ptn,
     const std::vector<Edge> &edges,
     const std::set<ida::Address> &start_functions,
-    FunctionOrder function_order
+    FunctionOrder function_order,
+    const std::map<ida::Address, std::string> &data_records
 ) {
     std::string text = render(summaries, annotations, emitter, callee_depth,
-                              type_decls, omit_ptn, edges, start_functions,
-                              function_order);
+                              type_decls, referenced_data, omit_ptn, edges,
+                              start_functions, function_order, data_records);
     std::ofstream out(path);
     if (!out) return false;
     out << text;

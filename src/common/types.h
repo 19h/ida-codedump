@@ -88,6 +88,8 @@ struct DumpOptions {
     bool dot_cluster_only = false; // Render only subsystem meta-nodes and inter-cluster edges
     double subsystem_cluster_resolution = 1.0; // Louvain/RB modularity gamma; higher = smaller clusters
     bool tree_shake_stdlib_functions = false; // Drop library/thunk/common runtime functions from graph walks
+    bool include_referenced_data = false; // Emit a block with the data items (strings/bytes) referenced by dumped functions
+    int referenced_data_max_bytes = 64; // Max payload bytes rendered per referenced data item
     FunctionOrder function_order = FunctionOrder::Address; // Rendered function order
     int max_chars = 0;  // 0 = no limit
     std::string output_path;

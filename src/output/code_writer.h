@@ -23,9 +23,12 @@ public:
         int callee_depth,
         int max_chars = 0,
         const std::string &type_decls = "",
+        const std::string &referenced_data = "",
         bool omit_ptn = false,
         FunctionOrder function_order = FunctionOrder::Address,
-        const std::set<ida::Address> *removed_functions = nullptr
+        const std::set<ida::Address> *removed_functions = nullptr,
+        const std::map<ida::Address, std::string> &data_records =
+            std::map<ida::Address, std::string>{}
     );
 
     bool write(
@@ -38,9 +41,12 @@ public:
         int callee_depth,
         int max_chars = 0,
         const std::string &type_decls = "",
+        const std::string &referenced_data = "",
         bool omit_ptn = false,
         FunctionOrder function_order = FunctionOrder::Address,
-        const std::set<ida::Address> *removed_functions = nullptr
+        const std::set<ida::Address> *removed_functions = nullptr,
+        const std::map<ida::Address, std::string> &data_records =
+            std::map<ida::Address, std::string>{}
     );
 
 private:
@@ -59,6 +65,7 @@ private:
         ida::Address func_ea,
         const FunctionSummary &summary,
         const std::string &annots,
+        const std::string &data_record,
         const std::vector<Edge> &edges,
         const std::map<ida::Address, FunctionSummary> &all_summaries,
         bool omit_ptn

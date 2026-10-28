@@ -112,6 +112,7 @@ ida_add_plugin(codedump
         src/analysis/function_ranker.cpp
         src/analysis/subsystem_clusterer.cpp
         src/analysis/ctree_analyzer.cpp
+        src/analysis/data_ref_collector.cpp
         src/analysis/ptn_emitter.cpp
         src/analysis/register_analyzer.cpp
         src/analysis/type_collector.cpp
@@ -253,6 +254,7 @@ if(CODEDUMP_BUILD_CLI)
         src/analysis/function_ranker.cpp
         src/analysis/subsystem_clusterer.cpp
         src/analysis/ctree_analyzer.cpp
+        src/analysis/data_ref_collector.cpp
         src/analysis/ptn_emitter.cpp
         src/analysis/register_analyzer.cpp
         src/analysis/type_collector.cpp

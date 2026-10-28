@@ -351,7 +351,7 @@ static void dump_functions_impl(std::span<const ida::Address> start_funcs,
         CodeWriter cw;
         rendered = cw.render(summaries, annotations, rendered_edges, start_set,
                              opts.caller_depth, opts.callee_depth, opts.max_chars,
-                             type_decls, opts.omit_ptn,
+                             type_decls, /*referenced_data=*/{}, opts.omit_ptn,
                              opts.function_order, &removed_empty_functions);
         kind = "code";
         kind_count = summaries.size();
@@ -383,7 +383,8 @@ static void dump_functions_impl(std::span<const ida::Address> start_funcs,
             summaries.size());
         AsmWriter aw;
         rendered = aw.render(summaries, annotations, ptn_emitter,
-                             opts.callee_depth, type_decls, opts.omit_ptn,
+                             opts.callee_depth, type_decls,
+                             /*referenced_data=*/{}, opts.omit_ptn,
                              rendered_edges, start_set, opts.function_order);
         kind = "asm";
         kind_count = summaries.size();

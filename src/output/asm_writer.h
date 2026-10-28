@@ -20,10 +20,13 @@ public:
         PTNEmitter &emitter,
         int callee_depth,
         const std::string &type_decls = "",
+        const std::string &referenced_data = "",
         bool omit_ptn = false,
         const std::vector<Edge> &edges = std::vector<Edge>{},
         const std::set<ida::Address> &start_functions = std::set<ida::Address>{},
-        FunctionOrder function_order = FunctionOrder::Address
+        FunctionOrder function_order = FunctionOrder::Address,
+        const std::map<ida::Address, std::string> &data_records =
+            std::map<ida::Address, std::string>{}
     );
 
     bool write(
@@ -33,10 +36,13 @@ public:
         PTNEmitter &emitter,
         int callee_depth,
         const std::string &type_decls = "",
+        const std::string &referenced_data = "",
         bool omit_ptn = false,
         const std::vector<Edge> &edges = std::vector<Edge>{},
         const std::set<ida::Address> &start_functions = std::set<ida::Address>{},
-        FunctionOrder function_order = FunctionOrder::Address
+        FunctionOrder function_order = FunctionOrder::Address,
+        const std::map<ida::Address, std::string> &data_records =
+            std::map<ida::Address, std::string>{}
     );
 };
 
