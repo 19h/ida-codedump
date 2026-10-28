@@ -114,7 +114,7 @@ codedump runs a fixed five-pass pipeline against the function under your cursor.
 | **2 - Callees** | Breadth-first walk *down* the call graph (and references), up to *Callee Depth* layers. |
 | **3 - Bodies** | Decompile each discovered function's ctree and extract a provenance summary (arguments, aliases, global accesses). Optionally compute a register-liveness summary. |
 | **4 - Decompile** | Produce the pseudocode for each function and collect every type it references. Optionally capture disassembly. |
-| **5 - Output** | Build PTN annotations, resolve the type tree, render the chosen format, and write it to a file or the clipboard. |
+| **5 - Output** | Build PTN annotations, resolve the type tree, optionally collect the referenced data catalog, render the chosen format, and write it to a file or the clipboard. |
 
 The graph walk is what makes the output *useful* rather than a single-function paste. It doesn't just follow direct calls; it understands seven distinct kinds of edge, each of which you can switch on or off:
 
@@ -155,7 +155,7 @@ That drops `codedump.so` / `codedump.dylib` / `codedump.dll` into `~/.idapro/plu
 
 The plugin is intentionally **hidden**: it has no menu entry and no default hotkey. You drive it entirely from the right-click popups in the pseudocode and Local Types views. (Running it from the plugins list directly just opens the code-dump dialog.)
 
-> **Good to know** codedump initialises the Hex-Rays decompiler at load time; if Hex-Rays is unavailable it prints a message and refuses to load, because every one of its features depends on the decompiler.
+> **Good to know** codedump needs the Hex-Rays decompiler for every feature. It waits for Hex-Rays to come up (retrying at IDA's ready-to-run and database-open events) and registers its actions only once the decompiler session is acquired; running an action before that shows a warning instead.
 
 ### Requirements
 
@@ -277,7 +277,7 @@ cdump -f main --referenced-data --referenced-data-limit 32 mybin.i64   # include
 
 Key properties:
 - All-functions mode iterates `ida::function::by_index` directly and skips caller/callee graph discovery. Depths and xref filters apply only when at least one `-f` seed resolves.
-- If every supplied `-f` spec fails to resolve, the current CLI falls back to all-functions mode.
+- If every supplied `-f` spec fails to resolve, the CLI exits with an error (code 2) and prints the closest function-name matches for each spec. A partially-unresolved spec only warns, and the dump proceeds with the functions that did resolve.
 - Type declarations are collected only from decompiled functions in the dump; unused Local Types entries are not emitted.
 - Code and assembly outputs include resolved type declarations. DOT output uses discovered graph edges. Standalone PTN output is produced with `--format ptn`.
 - DOT output defaults to `rankdir=TB` with labeled edges. The CLI can switch direction (`--rankdir LR`/`RL`/`BT`), request Graphviz orthogonal routing (`--ortho`), hide edge labels (`--no-edge-labels`), prune common runtime/library nodes (`--tree-shake-stdlib`), and group nodes with `--cluster-subsystems`.
@@ -387,7 +387,7 @@ The two depths decide how much shows up. Bigger isn't better; past a point you g
 
 Common goals as concrete option sets:
 
-- **Drop a function into a chat or LLM** - Dump code (.c), Caller `1` / Callee `1`, **Max Characters** ≈ 40000, **Copy to clipboard**. Add **Trim types to referenced fields only** if the structs are large.
+- **Drop a function into a chat or LLM** - Dump code (.c), Caller `1` / Callee `1`, **Max Characters** ≈ 40000, **Copy to clipboard**. Add **Trim types to referenced fields only** if the structs are large, and **Include referenced data** if the code leans on string literals or lookup tables.
 - **File a readable bug repro** - Dump code (.c), default `2`/`2`, **Include size comments**, written to a file next to the IDB.
 - **Sketch a subsystem** - Dump call graph (.dot), Caller `1` / Callee `3`, untick everything in Xref Types except the call edges, then `dot -Tsvg`.
 - **Audit dataflow into a sink** - Dump PTN (.ptn) on the function that reaches the sink, Callee depth high enough to span the wrappers; read the `E:`/`I:` chains.
@@ -430,6 +430,7 @@ Every output that can go to the clipboard falls back to a select-all text dialog
 | **Include register summary** | off | Add per-function incoming/outgoing register lines. |
 | **Trim types to referenced fields only** | off | Reduce structs/unions to accessed members, padding the rest. |
 | **Tree-shake stdlib/runtime functions** | off | Drop library, thunk, and common runtime functions during graph walks. |
+| **Include referenced data (strings / bytes)** | off | Emit a `REF-DATA` catalog in code/asm dumps: every data item the dumped code references (strings quoted, pointer targets resolved, zero memory as a one-token callout), plus `D: F(func) -> D(item) [uses]` records inside each function block. |
 | **Function order** | Address | Select address order, entry-ness (entries, exports, callbacks, and gateways first), or centrality (graph-important functions first). |
 
 ### The call graph DOT dialog
@@ -539,7 +540,7 @@ end_func
 
 | Symptom | Cause | What to do |
 |---------|-------|-----------|
-| Plugin won't load; log says *Hex-Rays decompiler not available* | No decompiler for this binary's architecture | codedump requires Hex-Rays; there's nothing it can do without it. |
+| An action warns *Hex-Rays is not available for the current database* | The decompiler for this binary's architecture isn't up yet | codedump registers its actions as soon as Hex-Rays is available — watch the Output window for *Waiting for Hex-Rays decompiler...* and make sure a matching decompiler plugin is installed. |
 | A **Dump** action is greyed out | Wrong view | Code and metadata actions enable only in the pseudocode view; type actions only in **Local Types**, on a named type. |
 | *No function at cursor* | The cursor isn't inside a recognised function | Put the cursor inside a function (define one with **P** if IDA hasn't). |
 | Some bodies show `// (decompilation failed)` | Hex-Rays couldn't decompile that function | Expected for a few functions; the rest still dump. Pass 4's progress shows the ok/fail split. |

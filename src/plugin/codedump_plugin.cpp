@@ -19,6 +19,7 @@
 #include "common/types.h"
 #include "graph/graph_builder.h"
 #include "analysis/ctree_analyzer.h"
+#include "analysis/data_ref_collector.h"
 #include "analysis/ptn_emitter.h"
 #include "analysis/register_analyzer.h"
 #include "analysis/type_collector.h"
@@ -317,7 +318,7 @@ static void dump_functions_impl(std::span<const ida::Address> start_funcs,
 
     replace_wait_box(
         "CodeDumper: pass 5/5 — generating output\n"
-        "Step 1/3: building PTN annotations (%s)",
+        "Step 1/4: building PTN annotations (%s)",
         opts.omit_ptn ? "skipped" : "active");
     log("[codedump] Pass 5: Generating output...\n");
     PTNEmitter ptn_emitter(summaries);
@@ -328,12 +329,33 @@ static void dump_functions_impl(std::span<const ida::Address> start_funcs,
 
     replace_wait_box(
         "CodeDumper: pass 5/5 — generating output\n"
-        "Step 2/3: resolving type tree (%s size-comments)",
+        "Step 2/4: resolving type tree (%s size-comments)",
         opts.size_comments ? "with" : "without");
     std::string type_decls = type_collector.emit(opts.size_comments,
                                                   opts.referenced_fields_only);
     log("[codedump] Type tree: {} chars\n", type_decls.size());
     if (user_cancelled()) { log("[codedump] Cancelled.\n"); return; }
+
+    std::string referenced_data;
+    std::map<ida::Address, std::string> data_records;
+    if (opts.include_referenced_data && (opts.output_code || opts.output_asm)) {
+        replace_wait_box(
+            "CodeDumper: pass 5/5 — generating output\n"
+            "Step 3/4: collecting referenced data");
+        log("[codedump] Pass 5: Collecting referenced data...\n");
+        DataRefCollector data_collector;
+        for (ida::Address ea : functions)
+            data_collector.collect_from_function(ea);
+        if (user_cancelled()) { log("[codedump] Cancelled.\n"); return; }
+        if (!data_collector.empty()) {
+            referenced_data = data_collector.emit(
+                static_cast<std::size_t>(opts.referenced_data_max_bytes),
+                summaries);
+            data_records = data_collector.per_function_records(summaries);
+            log("[codedump] Referenced data: {} item(s)\n",
+                data_collector.size());
+        }
+    }
 
     std::string base_path = opts.output_path;
     std::set<ida::Address> start_set(start_funcs.begin(), start_funcs.end());
@@ -346,20 +368,21 @@ static void dump_functions_impl(std::span<const ida::Address> start_funcs,
     if (opts.output_code) {
         replace_wait_box(
             "CodeDumper: pass 5/5 — generating output\n"
-            "Step 3/3: rendering code (%zu functions, %zu types)",
+            "Step 4/4: rendering code (%zu functions, %zu types)",
             summaries.size(), type_decls.size() ? size_t(1) : size_t(0));
         CodeWriter cw;
         rendered = cw.render(summaries, annotations, rendered_edges, start_set,
                              opts.caller_depth, opts.callee_depth, opts.max_chars,
-                             type_decls, /*referenced_data=*/{}, opts.omit_ptn,
-                             opts.function_order, &removed_empty_functions);
+                             type_decls, referenced_data, opts.omit_ptn,
+                             opts.function_order, &removed_empty_functions,
+                             data_records);
         kind = "code";
         kind_count = summaries.size();
     }
     if (opts.output_dot) {
         replace_wait_box(
             "CodeDumper: pass 5/5 — generating output\n"
-            "Step 3/3: rendering DOT (%zu nodes, %zu edges)",
+            "Step 4/4: rendering DOT (%zu nodes, %zu edges)",
             functions.size(), edges.size());
         DotWriter dw;
         rendered = dw.render(functions, edges, start_set, opts);
@@ -369,7 +392,7 @@ static void dump_functions_impl(std::span<const ida::Address> start_funcs,
     if (opts.output_ptn) {
         replace_wait_box(
             "CodeDumper: pass 5/5 — generating output\n"
-            "Step 3/3: rendering PTN (%zu functions)",
+            "Step 4/4: rendering PTN (%zu functions)",
             summaries.size());
         PTNWriter pw;
         rendered = pw.render(summaries, start_set, opts.callee_depth, ptn_emitter);
@@ -379,13 +402,13 @@ static void dump_functions_impl(std::span<const ida::Address> start_funcs,
     if (opts.output_asm) {
         replace_wait_box(
             "CodeDumper: pass 5/5 — generating output\n"
-            "Step 3/3: rendering assembly (%zu functions)",
+            "Step 4/4: rendering assembly (%zu functions)",
             summaries.size());
         AsmWriter aw;
         rendered = aw.render(summaries, annotations, ptn_emitter,
-                             opts.callee_depth, type_decls,
-                             /*referenced_data=*/{}, opts.omit_ptn,
-                             rendered_edges, start_set, opts.function_order);
+                             opts.callee_depth, type_decls, referenced_data,
+                             opts.omit_ptn, rendered_edges, start_set,
+                             opts.function_order, data_records);
         kind = "asm";
         kind_count = summaries.size();
     }
@@ -562,7 +585,8 @@ static constexpr std::string_view kTextDumpFormFields =
     "<Immediate References:C><Copy to clipboard (skip file write):c>\n"
     "<Tail Calls:C><Include register summary (incoming/outgoing regs):c>\n"
     "<Virtual Calls:C><Trim types to referenced fields only (pad the rest):c>\n"
-    "<Jump Tables:C>><Tree-shake stdlib/runtime functions:c>>\n"
+    "<Jump Tables:C>><Tree-shake stdlib/runtime functions:c>\n"
+    "<Include referenced data (strings / bytes):c>>\n"
     "\n"
     "<##Function order##Address:R><Entry-ness:R><Centrality:R>>\n"
     "\n";
@@ -605,13 +629,14 @@ constexpr bool form_contains_any(
     });
 }
 
-static constexpr std::array<std::string_view, 9> kTextOnlyDialogLabels{
+static constexpr std::array<std::string_view, 10> kTextOnlyDialogLabels{
     "Max Characters",
     "Remove empty functions and xrefs",
     "Omit PTN annotations",
     "Include size comments",
     "Include register summary",
     "Trim types to referenced fields only",
+    "Include referenced data",
     "Function order",
     "Entry-ness",
     "Centrality",
@@ -694,6 +719,7 @@ static void show_dump_dialog(std::string_view output_type) {
     opts.register_summary      = (options_check & 16) != 0;
     opts.referenced_fields_only= (options_check & 32) != 0;
     opts.tree_shake_stdlib_functions = (options_check & 64) != 0;
+    opts.include_referenced_data = (options_check & 128) != 0;
     if (function_order_radio == 2)
         opts.function_order = FunctionOrder::Centrality;
     else if (function_order_radio == 1)
